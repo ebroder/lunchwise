@@ -1,0 +1,14 @@
+name = "lunchwise"
+main = "src/index.tsx"
+compatibility_date = "2025-12-01"
+workers_dev = true
+
+[assets]
+directory = "./public"
+
+[triggers]
+crons = ["0 */2 * * *"]
+
+[[routes]]
+pattern = "lunchwise.app"
+custom_domain = true

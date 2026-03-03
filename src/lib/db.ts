@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { sql } from "drizzle-orm";
 import * as sharedSchema from "./schema-shared.js";
 import * as userSchema from "./schema-user.js";
+import { env } from "./env.js";
 
 // --- Types ---
 
@@ -13,8 +14,8 @@ export type UserDb = ReturnType<typeof createUserDrizzle>;
 
 function createSharedDrizzle() {
   const client = createClient({
-    url: process.env.TURSO_SHARED_DB_URL || "file:local.db",
-    authToken: process.env.TURSO_AUTH_TOKEN,
+    url: env.TURSO_SHARED_DB_URL!,
+    authToken: env.TURSO_AUTH_TOKEN,
   });
   return drizzle({ client, schema: sharedSchema });
 }
@@ -33,7 +34,7 @@ export function getSharedDb(): SharedDb {
 function createUserDrizzle(url: string) {
   const client = createClient({
     url,
-    authToken: process.env.TURSO_AUTH_TOKEN,
+    authToken: env.TURSO_AUTH_TOKEN,
   });
   return drizzle({ client, schema: userSchema });
 }
@@ -61,20 +62,6 @@ export function getUserDb(url: string): UserDb {
 }
 
 // --- Schema initialization ---
-
-export async function initSharedDb(): Promise<void> {
-  const db = getSharedDb();
-  await db.run(sql`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      splitwise_user_id TEXT NOT NULL UNIQUE,
-      turso_db_url TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-  console.log("Shared database schema initialized");
-}
 
 export async function initUserDb(db: UserDb): Promise<void> {
   await db.run(sql`

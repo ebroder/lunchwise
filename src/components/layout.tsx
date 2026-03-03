@@ -19,7 +19,7 @@ export const Layout: FC<
           href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Serif+Display&display=swap"
           rel="stylesheet"
         />
-        <link rel="stylesheet" href="/public/styles.css" />
+        <link rel="stylesheet" href="/styles.css" />
       </head>
       <body class="bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 min-h-screen font-sans">
         {bare ? (

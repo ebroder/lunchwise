@@ -6,12 +6,13 @@ import { eq } from "drizzle-orm";
 import { getSharedDb, getUserDb, type UserDb } from "./db.js";
 import { users } from "./schema-shared.js";
 import { credentials } from "./schema-user.js";
+import { env } from "./env.js";
 
 const COOKIE_NAME = "lunchwise_session";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 function getSecret(): Uint8Array {
-  const secret = process.env.SESSION_SECRET;
+  const secret = env.SESSION_SECRET;
   if (!secret) throw new Error("SESSION_SECRET is required");
   return new TextEncoder().encode(secret);
 }
@@ -28,7 +29,7 @@ export async function createSession(
 
   setCookie(c, COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: env.NODE_ENV === "production",
     sameSite: "Lax",
     path: "/",
     maxAge: COOKIE_MAX_AGE,

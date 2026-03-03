@@ -4,3 +4,5 @@ public/styles.css
 local.db
 local-user-*.db
 .env
+.dev.vars
+.wrangler

@@ -1,3 +1,5 @@
+import { env } from "./env.js";
+
 const TURSO_PLATFORM_API_BASE = "https://api.turso.tech";
 
 interface CreateDatabaseResponse {
@@ -8,9 +10,9 @@ interface CreateDatabaseResponse {
 }
 
 export async function createTursoDatabase(name: string): Promise<string> {
-  const apiToken = process.env.TURSO_PLATFORM_API_TOKEN;
-  const org = process.env.TURSO_ORG;
-  const group = process.env.TURSO_GROUP || "default";
+  const apiToken = env.TURSO_PLATFORM_API_TOKEN;
+  const org = env.TURSO_ORG;
+  const group = env.TURSO_GROUP || "default";
 
   // Local dev: no Platform API credentials, use file-based SQLite
   if (!apiToken || !org) {
