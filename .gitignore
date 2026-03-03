@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+public/styles.css
+public/app.js
+src/generated/
+local.db
+local-user-*.db
+.env
+.dev.vars
+.wrangler

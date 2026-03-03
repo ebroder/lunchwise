@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-serif: "DM Serif Display", Georgia, serif;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.7s ease-out both;
+}
+
+.hero-glow {
+  background: radial-gradient(
+    ellipse 80% 60% at 50% 0%,
+    rgba(180, 83, 9, 0.04) 0%,
+    transparent 100%
+  );
+}
+
+@media (prefers-color-scheme: dark) {
+  .hero-glow {
+    background: radial-gradient(
+      ellipse 80% 60% at 50% 0%,
+      rgba(180, 83, 9, 0.08) 0%,
+      transparent 100%
+    );
+  }
+}
