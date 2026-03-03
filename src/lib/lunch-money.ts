@@ -70,6 +70,7 @@ export async function getTransactions(
           manual_account_id: params.manual_account_id,
           start_date: params.start_date,
           end_date: params.end_date,
+          include_group_children: true,
           limit,
           offset,
         },

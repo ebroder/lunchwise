@@ -176,9 +176,14 @@ async function planSync(
   link: Link,
   user: User,
   dryRun: boolean,
-): Promise<{ actions: PlannedAction[]; expenses_fetched: number }> {
+): Promise<{
+  actions: PlannedAction[];
+  expenses_fetched: number;
+  stamps: { trackedId: number; splitwiseUpdatedAt: string }[];
+}> {
   const apiKey = user.lunchMoneyApiKey!;
   const actions: PlannedAction[] = [];
+  const stamps: { trackedId: number; splitwiseUpdatedAt: string }[] = [];
 
   const tracked = await buildTrackedMap(db, link, apiKey, dryRun);
 
@@ -260,21 +265,29 @@ async function planSync(
         lmData,
       });
     } else if (existing.splitwiseUpdatedAt !== expense.updated_at) {
-      actions.push({
-        type: "update",
-        expenseId: String(expense.id),
-        date: lmData.date,
-        payee,
-        amount,
-        currency: expense.currency_code ?? "USD",
-        splitwiseUpdatedAt: expense.updated_at ?? "",
-        lmData,
-        tracked: existing,
-      });
+      if (!existing.splitwiseUpdatedAt) {
+        // Backfilled row: just record the timestamp, no LM update needed
+        stamps.push({
+          trackedId: existing.id,
+          splitwiseUpdatedAt: expense.updated_at ?? "",
+        });
+      } else {
+        actions.push({
+          type: "update",
+          expenseId: String(expense.id),
+          date: lmData.date,
+          payee,
+          amount,
+          currency: expense.currency_code ?? "USD",
+          splitwiseUpdatedAt: expense.updated_at ?? "",
+          lmData,
+          tracked: existing,
+        });
+      }
     }
   }
 
-  return { actions, expenses_fetched: expenses.length };
+  return { actions, expenses_fetched: expenses.length, stamps };
 }
 
 // Phase 2: Execute planned actions against LM and the local DB.
@@ -343,7 +356,7 @@ export async function syncLink(
   const syncStartedAt = new Date().toISOString();
 
   // Plan phase: decide what to do (shared logic for dry run and real sync)
-  const { actions, expenses_fetched } = await planSync(db, link, user, dryRun);
+  const { actions, expenses_fetched, stamps } = await planSync(db, link, user, dryRun);
 
   const result: SyncResult = {
     expenses_fetched,
@@ -369,6 +382,17 @@ export async function syncLink(
 
   try {
     await executeActions(db, link, apiKey, actions);
+
+    // Record timestamps for backfilled rows (no LM update needed)
+    for (const stamp of stamps) {
+      await db
+        .update(syncedTransactions)
+        .set({
+          splitwiseUpdatedAt: stamp.splitwiseUpdatedAt,
+          updatedAt: sql`datetime('now')`,
+        })
+        .where(eq(syncedTransactions.id, stamp.trackedId));
+    }
 
     // Update sync cursor
     await db
