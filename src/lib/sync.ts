@@ -10,7 +10,7 @@ import {
 } from "./splitwise.js";
 import {
   insertTransactions,
-  updateTransaction,
+  updateTransactions,
   getTransactions,
   type LmInsertTransaction,
 } from "./lunch-money.js";
@@ -18,6 +18,23 @@ import type { User } from "./auth.js";
 import { decrypt } from "./crypto.js";
 
 type Link = typeof links.$inferSelect;
+
+/** Extract a useful error message, including libsql error codes when available. */
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const e = err as unknown as Record<string, unknown>;
+  const parts: string[] = [];
+  // Error class name (e.g. LibsqlError vs Error)
+  if (err.constructor.name !== "Error") parts.push(`[${err.constructor.name}]`);
+  if (e.code) parts.push(`code=${e.code}`);
+  if (e.rawCode !== undefined) parts.push(`rawCode=${e.rawCode}`);
+  parts.push(err.message);
+  // Check for a wrapped cause
+  if (err.cause instanceof Error) {
+    parts.push(`| cause: ${describeError(err.cause)}`);
+  }
+  return parts.join(" ");
+}
 type TrackedRow = typeof syncedTransactions.$inferSelect;
 
 export interface PlannedAction {
@@ -36,7 +53,7 @@ export interface PlannedAction {
     manual_account_id: number;
     external_id: string;
     notes: string;
-    status: "reviewed";
+    status: "unreviewed" | "reviewed";
   };
   // Present for update/delete (the existing LM transaction to modify)
   tracked?: TrackedRow;
@@ -64,69 +81,6 @@ function buildNotes(expense: SplitwiseExpense, userAmount: number): string {
   return parts.join(" | ").slice(0, 350);
 }
 
-// On first sync, backfill synced_transactions from existing LM transactions
-// so we don't re-create ones from a prior local sync script.
-async function backfillExisting(
-  db: UserDb,
-  link: Link,
-  apiKey: string,
-): Promise<void> {
-  const startDate = link.startDate ?? "2000-01-01";
-  const endDate = "2099-12-31";
-  const lmTransactions = await getTransactions(apiKey, {
-    manual_account_id: link.lmAccountId,
-    start_date: startDate,
-    end_date: endDate,
-  });
-
-  let backfilled = 0;
-  for (const tx of lmTransactions) {
-    if (!tx.external_id) continue;
-    if (!/^\d+$/.test(tx.external_id)) continue;
-
-    const inserted = await db
-      .insert(syncedTransactions)
-      .values({
-        linkId: link.id,
-        splitwiseExpenseId: tx.external_id,
-        lmTransactionId: tx.id,
-        splitwiseUpdatedAt: "",
-      })
-      .onConflictDoNothing();
-    if (inserted.rowsAffected > 0) backfilled++;
-  }
-
-  if (backfilled > 0) {
-    console.log(
-      `Backfilled ${backfilled} existing transactions for link ${link.id}`,
-    );
-  }
-}
-
-// Scan LM transactions and return expense IDs that already exist there,
-// along with their current LM amounts (for comparing during backfill).
-async function getBackfilledData(
-  link: Link,
-  apiKey: string,
-): Promise<Map<string, { lmAmount: number }>> {
-  const data = new Map<string, { lmAmount: number }>();
-  const startDate = link.startDate ?? "2000-01-01";
-  const endDate = "2099-12-31";
-  const lmTransactions = await getTransactions(apiKey, {
-    manual_account_id: link.lmAccountId,
-    start_date: startDate,
-    end_date: endDate,
-  });
-
-  for (const tx of lmTransactions) {
-    if (!tx.external_id) continue;
-    if (!/^\d+$/.test(tx.external_id)) continue;
-    data.set(tx.external_id, { lmAmount: parseFloat(tx.amount) });
-  }
-
-  return data;
-}
-
 // Build a map of tracked expenses. For first sync, either runs real backfill
 // (mutates DB) or simulates it (in-memory only). Also returns LM amounts
 // for backfilled rows so planSync can compare against Splitwise.
@@ -143,26 +97,54 @@ async function buildTrackedMap(
   const backfilledAmounts = new Map<string, number>();
 
   if (!link.lastSyncedAt) {
-    const backfilledData = await getBackfilledData(link, apiKey);
+    // Fetch existing LM transactions once (used for both backfill and amount comparison)
+    const lmTransactions = await getTransactions(apiKey, {
+      manual_account_id: link.lmAccountId,
+      start_date: link.startDate ?? "2000-01-01",
+      end_date: "2099-12-31",
+    });
 
-    if (dryRun) {
-      for (const [id, data] of backfilledData) {
-        tracked.set(id, {
+    const backfillRows = [];
+    for (const tx of lmTransactions) {
+      if (!tx.external_id || !/^\d+$/.test(tx.external_id)) continue;
+      backfilledAmounts.set(tx.external_id, parseFloat(tx.amount));
+
+      if (dryRun) {
+        tracked.set(tx.external_id, {
           id: 0,
           linkId: link.id,
-          splitwiseExpenseId: id,
+          splitwiseExpenseId: tx.external_id,
           lmTransactionId: 0,
-          splitwiseUpdatedAt: "",
+          splitwiseUpdatedAt: "backfill",
           isDeleted: 0,
           createdAt: "",
           updatedAt: "",
         });
-        backfilledAmounts.set(id, data.lmAmount);
+      } else {
+        backfillRows.push({
+          linkId: link.id,
+          splitwiseExpenseId: tx.external_id,
+          lmTransactionId: tx.id,
+          splitwiseUpdatedAt: "backfill",
+        });
       }
-    } else {
-      await backfillExisting(db, link, apiKey);
-      for (const [id, data] of backfilledData) {
-        backfilledAmounts.set(id, data.lmAmount);
+    }
+
+    // Batch inserts to stay within Cloudflare Workers subrequest limits
+    if (backfillRows.length > 0) {
+      let backfilled = 0;
+      const BATCH = 100;
+      for (let i = 0; i < backfillRows.length; i += BATCH) {
+        const result = await db
+          .insert(syncedTransactions)
+          .values(backfillRows.slice(i, i + BATCH))
+          .onConflictDoNothing();
+        backfilled += result.rowsAffected;
+      }
+      if (backfilled > 0) {
+        console.log(
+          `Backfilled ${backfilled} existing transactions for link ${link.id}`,
+        );
       }
     }
   }
@@ -260,7 +242,7 @@ async function planSync(
       manual_account_id: link.lmAccountId,
       external_id: String(expense.id),
       notes: buildNotes(expense, amount),
-      status: "reviewed" as const,
+      status: "unreviewed" as const,
     };
 
     if (!existing) {
@@ -275,7 +257,7 @@ async function planSync(
         lmData,
       });
     } else if (existing.splitwiseUpdatedAt !== expense.updated_at) {
-      if (!existing.splitwiseUpdatedAt) {
+      if (existing.splitwiseUpdatedAt === "backfill") {
         // Backfilled row: only update if the amount has drifted
         const lmAmount = backfilledAmounts.get(String(expense.id));
         if (lmAmount !== undefined && lmAmount === amount) {
@@ -316,60 +298,93 @@ async function planSync(
 }
 
 // Phase 2: Execute planned actions against LM and the local DB.
+// Batches both API calls and DB writes to stay within subrequest limits.
 async function executeActions(
   db: UserDb,
   link: Link,
   apiKey: string,
   actions: PlannedAction[],
 ): Promise<{ created: number; updated: number; deleted: number }> {
-  let created = 0;
-  let updated = 0;
-  let deleted = 0;
+  const creates = actions.filter((a) => a.type === "create");
+  const updates = actions.filter((a) => a.type === "update");
+  const deletes = actions.filter((a) => a.type === "delete");
 
-  for (const action of actions) {
-    if (action.type === "create") {
-      const inserted = await insertTransactions(apiKey, [action.lmData]);
-      if (!inserted || inserted.length === 0) {
+  const dbStmts: Array<{ sql: string; args: (string | number)[] }> = [];
+
+  // Bulk create in LM, then record tracking rows
+  if (creates.length > 0) {
+    const inserted = await insertTransactions(
+      apiKey,
+      creates.map((a) => a.lmData),
+    );
+    const byExtId = new Map<string, number>();
+    for (const tx of inserted) {
+      if (tx.external_id) byExtId.set(tx.external_id, tx.id);
+    }
+    for (const action of creates) {
+      const lmId = byExtId.get(action.expenseId);
+      if (!lmId) {
         throw new Error(
-          `Lunch Money returned no transactions for expense ${action.expenseId}`,
+          `Lunch Money returned no transaction for expense ${action.expenseId}`,
         );
       }
-      await db.insert(syncedTransactions).values({
-        linkId: link.id,
-        splitwiseExpenseId: action.expenseId,
-        lmTransactionId: inserted[0].id,
-        splitwiseUpdatedAt: action.splitwiseUpdatedAt,
+      dbStmts.push({
+        sql: "INSERT INTO synced_transactions (link_id, splitwise_expense_id, lm_transaction_id, splitwise_updated_at) VALUES (?, ?, ?, ?)",
+        args: [link.id, action.expenseId, lmId, action.splitwiseUpdatedAt],
       });
-      created++;
-    } else if (action.type === "update") {
-      await updateTransaction(apiKey, action.tracked!.lmTransactionId, {
-        amount: action.lmData.amount,
-        currency: action.lmData.currency,
-        notes: action.lmData.notes,
-      });
-      await db
-        .update(syncedTransactions)
-        .set({
-          splitwiseUpdatedAt: action.splitwiseUpdatedAt,
-          isDeleted: 0,
-          updatedAt: sql`datetime('now')`,
-        })
-        .where(eq(syncedTransactions.id, action.tracked!.id));
-      updated++;
-    } else if (action.type === "delete") {
-      await updateTransaction(apiKey, action.tracked!.lmTransactionId, {
-        payee: action.lmData.payee,
-        amount: 0,
-      });
-      await db
-        .update(syncedTransactions)
-        .set({ isDeleted: 1, updatedAt: sql`datetime('now')` })
-        .where(eq(syncedTransactions.id, action.tracked!.id));
-      deleted++;
     }
   }
 
-  return { created, updated, deleted };
+  // Bulk update in LM
+  if (updates.length > 0) {
+    await updateTransactions(
+      apiKey,
+      updates.map((a) => ({
+        id: a.tracked!.lmTransactionId,
+        amount: a.lmData.amount,
+        currency: a.lmData.currency,
+        notes: a.lmData.notes,
+      })),
+    );
+    for (const action of updates) {
+      dbStmts.push({
+        sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, is_deleted = 0, updated_at = datetime('now') WHERE id = ?",
+        args: [action.splitwiseUpdatedAt, action.tracked!.id],
+      });
+    }
+  }
+
+  // Bulk delete (zero out) in LM
+  if (deletes.length > 0) {
+    await updateTransactions(
+      apiKey,
+      deletes.map((a) => ({
+        id: a.tracked!.lmTransactionId,
+        payee: a.lmData.payee,
+        amount: 0,
+      })),
+    );
+    for (const action of deletes) {
+      dbStmts.push({
+        sql: "UPDATE synced_transactions SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?",
+        args: [action.tracked!.id],
+      });
+    }
+  }
+
+  // Batch all DB writes
+  if (dbStmts.length > 0) {
+    const BATCH = 100;
+    for (let i = 0; i < dbStmts.length; i += BATCH) {
+      await db.$client.batch(dbStmts.slice(i, i + BATCH));
+    }
+  }
+
+  return {
+    created: creates.length,
+    updated: updates.length,
+    deleted: deletes.length,
+  };
 }
 
 export async function syncLink(
@@ -412,15 +427,17 @@ export async function syncLink(
   try {
     await executeActions(db, link, apiKey, actions);
 
-    // Record timestamps for backfilled rows (no LM update needed)
-    for (const stamp of stamps) {
-      await db
-        .update(syncedTransactions)
-        .set({
-          splitwiseUpdatedAt: stamp.splitwiseUpdatedAt,
-          updatedAt: sql`datetime('now')`,
-        })
-        .where(eq(syncedTransactions.id, stamp.trackedId));
+    // Record timestamps for backfilled rows (no LM update needed).
+    // Batch to stay within Cloudflare Workers subrequest limits.
+    if (stamps.length > 0) {
+      const stmts = stamps.map((s) => ({
+        sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, updated_at = datetime('now') WHERE id = ?",
+        args: [s.splitwiseUpdatedAt, s.trackedId],
+      }));
+      const BATCH = 100;
+      for (let i = 0; i < stmts.length; i += BATCH) {
+        await db.$client.batch(stmts.slice(i, i + BATCH));
+      }
     }
 
     // Update sync cursor
@@ -441,7 +458,6 @@ export async function syncLink(
       })
       .where(eq(syncLog.id, logEntryId));
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
     await db
       .update(syncLog)
       .set({
@@ -451,7 +467,7 @@ export async function syncLink(
         created: result.created,
         updated: result.updated,
         deleted: result.deleted,
-        errorMessage: message,
+        errorMessage: describeError(err),
       })
       .where(eq(syncLog.id, logEntryId));
     throw err;
@@ -501,7 +517,7 @@ export async function syncAllEnabled(): Promise<void> {
           `Synced link ${link.id} (user ${row.id}): ${result.created} created, ${result.updated} updated, ${result.deleted} deleted`,
         );
       } catch (err) {
-        console.error(`Sync failed for link ${link.id} (user ${row.id}):`, err);
+        console.error(`Sync failed for link ${link.id} (user ${row.id}): ${describeError(err)}`);
       }
 
       await new Promise((r) => setTimeout(r, 500));

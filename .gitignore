@@ -1,6 +1,8 @@
 node_modules/
 dist/
 public/styles.css
+public/app.js
+src/generated/
 local.db
 local-user-*.db
 .env

@@ -50,6 +50,23 @@ export async function updateTransaction(
   }
 }
 
+export async function updateTransactions(
+  apiKey: string,
+  updates: Array<
+    { id: number } & components["schemas"]["updateTransactionObject"]
+  >,
+): Promise<void> {
+  if (updates.length === 0) return;
+  const client = createLunchMoneyClient(apiKey);
+  const { error } = await client.PUT("/transactions", {
+    body: { transactions: updates },
+  });
+
+  if (error) {
+    throw new Error(`Lunch Money API error: ${JSON.stringify(error)}`);
+  }
+}
+
 export async function getTransactions(
   apiKey: string,
   params: {

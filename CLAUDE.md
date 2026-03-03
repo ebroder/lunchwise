@@ -7,8 +7,9 @@ cron syncs enabled links every 2 hours.
 
 ## Architecture
 
-Cloudflare Workers app built with Hono. Server-rendered JSX (no client-side
-JS framework). Tailwind CSS for styling.
+Cloudflare Workers app built with Hono. The landing page and auth flow are
+server-rendered JSX. The authenticated dashboard is a client-side SPA built
+with Preact + wouter, bundled by Vite. Tailwind CSS for styling.
 
 **Database**: Turso (libsql over HTTP). Multi-tenant design with two tiers:
 - Shared DB (`users` table) stores user IDs and per-user DB URLs
@@ -30,27 +31,50 @@ request). Library code imports `env` from there rather than using
 src/
   index.tsx          Workers entry point (fetch + scheduled handlers)
   app.tsx            Hono app, route mounting, JSX renderer
-  components/        Shared layout
-  routes/            Route handlers (landing, auth, dashboard, links, api)
+  components/        Shared layout (server-rendered pages)
+  routes/
+    landing.tsx      Marketing landing page (SSR)
+    auth.tsx         Splitwise OAuth flow (SSR)
+    dashboard.tsx    SPA shell (serves HTML + app.js for /dashboard/*)
+    api.tsx          JSON API (all endpoints return JSON)
   lib/
     env.ts           Shared env bindings
     db.ts            Turso/Drizzle client management, LRU cache for user DBs
-    auth.ts          JWT sessions (jose), requireAuth middleware
+    auth.ts          JWT sessions (jose), requireAuth + requireAuthJson
     turso.ts         Turso Platform API (creating per-user databases)
     sync.ts          Core sync logic (Splitwise -> Lunch Money)
     splitwise.ts     Splitwise API client (openapi-fetch)
     lunch-money.ts   Lunch Money API client (openapi-fetch)
     schema-shared.ts Drizzle schema for shared DB
     schema-user.ts   Drizzle schema for per-user DBs
+  client/            Client-side SPA (Preact + wouter, built by Vite)
+    main.tsx         Entry point
+    app.tsx          Router + layout shell
+    lib/api.ts       Fetch wrapper (JSON, 401 handling)
+    pages/           Page components (dashboard, link-new, link-edit, link-history)
+  generated/         Auto-generated (gitignored)
+    spa-html.ts      SPA HTML with hashed asset references
+index.html           Vite SPA entry point (project root)
+vite.config.ts       Vite config with @preact/preset-vite
+scripts/
+  generate-spa-html.ts  Reads Vite output, generates src/generated/spa-html.ts
 ```
+
+**Build setup**: Server code is bundled by wrangler. Client code is bundled
+by Vite (with `@preact/preset-vite`) into `dist/client/` with content-hashed
+filenames. A post-build script reads the Vite-generated `index.html` and
+writes it as a string constant in `src/generated/spa-html.ts`, which the
+dashboard route imports and serves after auth. Separate tsconfigs: root uses
+`jsxImportSource: "hono/jsx"` for server code, `tsconfig.client.json` uses
+`jsxImportSource: "preact"`.
 
 ## Commands
 
 ```
-npm run dev          # wrangler dev + Tailwind watch
-npm run build        # Tailwind CSS build (wrangler bundles TS at deploy time)
-npm run deploy       # CSS build + wrangler deploy
-npm run typecheck    # tsc --noEmit
+npm run dev          # wrangler dev + vite dev (with proxy)
+npm run build        # vite build + Tailwind CSS + generate SPA HTML module
+npm run deploy       # build + wrangler deploy
+npm run typecheck    # tsc --noEmit (server + client)
 npm test             # vitest run
 ```
 
@@ -64,8 +88,8 @@ Required secrets: `TURSO_SHARED_DB_URL`, `TURSO_AUTH_TOKEN`,
 `TURSO_PLATFORM_API_TOKEN`, `TURSO_ORG`, `TURSO_GROUP`, `SESSION_SECRET`,
 `SPLITWISE_CLIENT_ID`, `SPLITWISE_CLIENT_SECRET`, `APP_URL`, `NODE_ENV`.
 
-Static assets (just `public/styles.css`) are served via Workers asset
-binding at `/styles.css`.
+Static assets (Vite output + Tailwind CSS in `dist/client/`) are served via
+Workers asset binding.
 
 ## Notes
 

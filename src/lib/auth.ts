@@ -67,9 +67,9 @@ export function clearSession(c: Context): void {
   deleteCookie(c, COOKIE_NAME, { path: "/" });
 }
 
-export const requireAuth = createMiddleware<AuthEnv>(async (c, next) => {
+async function resolveAuth(c: Context): Promise<{ user: User; db: UserDb } | null> {
   const userId = await getUserId(c);
-  if (!userId) return c.redirect("/");
+  if (!userId) return null;
 
   const shared = getSharedDb();
   const rows = await shared
@@ -77,23 +77,40 @@ export const requireAuth = createMiddleware<AuthEnv>(async (c, next) => {
     .from(users)
     .where(eq(users.id, userId));
   const row = rows[0];
-  if (!row?.tursoDbUrl) return c.redirect("/");
+  if (!row?.tursoDbUrl) return null;
 
   const userDb = getUserDb(row.tursoDbUrl);
 
   const creds = await userDb.select().from(credentials).limit(1);
   const cred = creds[0];
-  if (!cred) return c.redirect("/");
+  if (!cred) return null;
 
-  c.set("user", {
-    id: row.id,
-    splitwiseUserId: row.splitwiseUserId,
-    tursoDbUrl: row.tursoDbUrl,
-    splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
-    lunchMoneyApiKey: cred.lunchMoneyApiKey
-      ? await decrypt(cred.lunchMoneyApiKey)
-      : null,
-  });
-  c.set("db", userDb);
+  return {
+    user: {
+      id: row.id,
+      splitwiseUserId: row.splitwiseUserId,
+      tursoDbUrl: row.tursoDbUrl,
+      splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
+      lunchMoneyApiKey: cred.lunchMoneyApiKey
+        ? await decrypt(cred.lunchMoneyApiKey)
+        : null,
+    },
+    db: userDb,
+  };
+}
+
+export const requireAuth = createMiddleware<AuthEnv>(async (c, next) => {
+  const result = await resolveAuth(c);
+  if (!result) return c.redirect("/");
+  c.set("user", result.user);
+  c.set("db", result.db);
+  await next();
+});
+
+export const requireAuthJson = createMiddleware<AuthEnv>(async (c, next) => {
+  const result = await resolveAuth(c);
+  if (!result) return c.json({ error: "Unauthorized" }, 401);
+  c.set("user", result.user);
+  c.set("db", result.db);
   await next();
 });

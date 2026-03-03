@@ -1,0 +1,131 @@
+import { useState, useEffect } from "preact/hooks";
+import { Link } from "wouter";
+import { api, ApiError } from "../lib/api.js";
+
+interface LogEntry {
+  id: number;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  expensesFetched: number | null;
+  created: number | null;
+  updated: number | null;
+  deleted: number | null;
+  errorMessage: string | null;
+}
+
+const card =
+  "bg-white dark:bg-stone-900 rounded-lg border border-stone-200 dark:border-stone-800";
+
+export function LinkHistory({ params }: { params: { id: string } }) {
+  const linkId = params.id;
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<LogEntry[]>(`/api/links/${linkId}/history`)
+      .then(setLogs)
+      .catch((err) => {
+        setError(
+          err instanceof ApiError ? err.message : "Failed to load history",
+        );
+      })
+      .finally(() => setLoading(false));
+  }, [linkId]);
+
+  return (
+    <div>
+      <div class="mb-6">
+        <Link
+          href={`/dashboard/links/${linkId}`}
+          class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+        >
+          &larr; Back to link
+        </Link>
+      </div>
+
+      <h1 class="text-2xl font-bold mb-6">Sync History</h1>
+
+      {error && (
+        <div class="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 text-sm">
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <p class="text-sm text-stone-500 dark:text-stone-400">Loading...</p>
+      ) : logs.length === 0 ? (
+        <p class="text-sm text-stone-500 dark:text-stone-400">
+          No sync runs yet.
+        </p>
+      ) : (
+        <div class={`${card} overflow-hidden`}>
+          <table class="w-full text-sm">
+            <thead class="bg-stone-50 dark:bg-stone-800/50 border-b border-stone-200 dark:border-stone-800">
+              <tr>
+                <th class="text-left px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
+                  Started
+                </th>
+                <th class="text-left px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
+                  Status
+                </th>
+                <th class="text-right px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
+                  Fetched
+                </th>
+                <th class="text-right px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
+                  Created
+                </th>
+                <th class="text-right px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
+                  Updated
+                </th>
+                <th class="text-right px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
+                  Deleted
+                </th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-stone-100 dark:divide-stone-800">
+              {logs.map((log) => (
+                <tr key={log.id}>
+                  <td class="px-4 py-2 text-stone-700 dark:text-stone-300">
+                    {log.startedAt}
+                  </td>
+                  <td class="px-4 py-2">
+                    <span
+                      class={
+                        log.status === "success"
+                          ? "text-green-600 dark:text-green-400"
+                          : log.status === "error"
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-amber-600 dark:text-amber-400"
+                      }
+                    >
+                      {log.status}
+                    </span>
+                    {log.errorMessage && (
+                      <span class="block text-xs text-red-500 dark:text-red-400 mt-0.5 max-w-xs truncate">
+                        {log.errorMessage}
+                      </span>
+                    )}
+                  </td>
+                  <td class="px-4 py-2 text-right text-stone-600 dark:text-stone-400">
+                    {log.expensesFetched}
+                  </td>
+                  <td class="px-4 py-2 text-right text-stone-600 dark:text-stone-400">
+                    {log.created}
+                  </td>
+                  <td class="px-4 py-2 text-right text-stone-600 dark:text-stone-400">
+                    {log.updated}
+                  </td>
+                  <td class="px-4 py-2 text-right text-stone-600 dark:text-stone-400">
+                    {log.deleted}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}

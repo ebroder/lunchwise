@@ -4,7 +4,7 @@ compatibility_date = "2025-12-01"
 workers_dev = true
 
 [assets]
-directory = "./public"
+directory = "./dist/client"
 
 [triggers]
 crons = ["0 */2 * * *"]

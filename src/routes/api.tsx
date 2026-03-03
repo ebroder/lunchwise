@@ -1,45 +1,38 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
-import { requireAuth, type AuthEnv } from "../lib/auth.js";
+import { eq, desc } from "drizzle-orm";
+import { requireAuthJson, type AuthEnv } from "../lib/auth.js";
 import { credentials, links, syncLog } from "../lib/schema-user.js";
-import { syncLink } from "../lib/sync.js";
+import { syncLink, describeError } from "../lib/sync.js";
 import { createSplitwiseClient } from "../lib/splitwise.js";
 import { createLunchMoneyClient, getManualAccounts } from "../lib/lunch-money.js";
 import { encrypt } from "../lib/crypto.js";
 
 const api = new Hono<AuthEnv>();
 
-api.use("*", requireAuth);
+api.use("*", requireAuthJson);
 
-// Save and validate Lunch Money API key
+// --- User ---
+
+api.get("/me", async (c) => {
+  const user = c.get("user");
+  return c.json({ hasLunchMoney: !!user.lunchMoneyApiKey });
+});
+
+// --- Settings ---
+
 api.post("/settings/lunch-money", async (c) => {
-  const body = await c.req.parseBody();
   const db = c.get("db");
-
-  if (body._method === "DELETE") {
-    // Only allow clearing the token when no links exist
-    const existingLinks = await db.select().from(links).limit(1);
-    if (existingLinks.length > 0) {
-      return c.redirect("/dashboard");
-    }
-    await db
-      .update(credentials)
-      .set({ lunchMoneyApiKey: null, updatedAt: new Date().toISOString() })
-      .where(eq(credentials.id, 1));
-    return c.redirect("/dashboard");
-  }
-
-  const apiKey = String(body.api_key || "").trim();
+  const body = await c.req.json<{ apiKey: string }>();
+  const apiKey = (body.apiKey || "").trim();
 
   if (!apiKey) {
-    return c.redirect("/dashboard?error=missing_key");
+    return c.json({ error: "API key is required" }, 400);
   }
 
-  // Validate by calling Lunch Money
   const client = createLunchMoneyClient(apiKey);
   const { error } = await client.GET("/me");
   if (error) {
-    return c.redirect("/dashboard?error=invalid_key");
+    return c.json({ error: "Invalid API key" }, 400);
   }
 
   await db
@@ -50,10 +43,26 @@ api.post("/settings/lunch-money", async (c) => {
     })
     .where(eq(credentials.id, 1));
 
-  return c.redirect("/dashboard");
+  return c.json({ ok: true });
 });
 
-// Proxy: Splitwise groups
+api.delete("/settings/lunch-money", async (c) => {
+  const db = c.get("db");
+  const existingLinks = await db.select().from(links).limit(1);
+  if (existingLinks.length > 0) {
+    return c.json({ error: "Remove all links before disconnecting" }, 400);
+  }
+
+  await db
+    .update(credentials)
+    .set({ lunchMoneyApiKey: null, updatedAt: new Date().toISOString() })
+    .where(eq(credentials.id, 1));
+
+  return c.json({ ok: true });
+});
+
+// --- Proxies ---
+
 api.get("/splitwise/groups", async (c) => {
   const user = c.get("user");
   const sw = createSplitwiseClient(user.splitwiseAccessToken);
@@ -66,7 +75,6 @@ api.get("/splitwise/groups", async (c) => {
   return c.json(data?.groups ?? []);
 });
 
-// Proxy: Lunch Money manual accounts
 api.get("/lunch-money/accounts", async (c) => {
   const user = c.get("user");
   if (!user.lunchMoneyApiKey) {
@@ -81,88 +89,127 @@ api.get("/lunch-money/accounts", async (c) => {
   }
 });
 
-// Create link
+// --- Links ---
+
+api.get("/links", async (c) => {
+  const db = c.get("db");
+  const rows = await db
+    .select()
+    .from(links)
+    .orderBy(desc(links.createdAt));
+  return c.json(rows);
+});
+
+api.get("/links/:id", async (c) => {
+  const linkId = parseInt(c.req.param("id"), 10);
+  const db = c.get("db");
+  const rows = await db
+    .select()
+    .from(links)
+    .where(eq(links.id, linkId));
+  const link = rows[0];
+  if (!link) {
+    return c.json({ error: "Link not found" }, 404);
+  }
+  return c.json(link);
+});
+
 api.post("/links", async (c) => {
-  const body = await c.req.parseBody();
+  const body = await c.req.json<{
+    splitwiseGroupId?: string | null;
+    lmAccountId: number;
+    startDate?: string | null;
+    includePayments?: boolean;
+  }>();
 
-  const groupId = body.splitwise_group_id
-    ? String(body.splitwise_group_id)
-    : null;
-  const accountId = parseInt(String(body.lm_account_id), 10);
-  const startDate = body.start_date ? String(body.start_date) : null;
-  const includePayments = body.include_payments === "on" ? 1 : 0;
-
+  const accountId = body.lmAccountId;
   if (!Number.isInteger(accountId) || accountId <= 0) {
-    return c.redirect("/dashboard/links/new?error=missing_account");
+    return c.json({ error: "Invalid account ID" }, 400);
   }
 
   const db = c.get("db");
   const [created] = await db
     .insert(links)
     .values({
-      splitwiseGroupId: groupId,
+      splitwiseGroupId: body.splitwiseGroupId || null,
       lmAccountId: accountId,
-      startDate,
-      includePayments,
+      startDate: body.startDate || null,
+      includePayments: body.includePayments ? 1 : 0,
       enabled: 0,
     })
     .returning({ id: links.id });
 
-  return c.redirect(`/dashboard/links/${created.id}`);
+  return c.json({ id: created.id });
 });
 
-// Update or delete link
-api.post("/links/:id", async (c) => {
+api.put("/links/:id", async (c) => {
   const linkId = parseInt(c.req.param("id"), 10);
-  const body = await c.req.parseBody();
-  const db = c.get("db");
+  const body = await c.req.json<{
+    splitwiseGroupId?: string | null;
+    lmAccountId: number;
+    startDate?: string | null;
+    includePayments?: boolean;
+    enabled?: boolean;
+  }>();
 
-  if (body._method === "DELETE") {
-    const client = db.$client;
-    await client.batch([
-      {
-        sql: "DELETE FROM synced_transactions WHERE link_id = ?",
-        args: [linkId],
-      },
-      {
-        sql: "DELETE FROM sync_log WHERE link_id = ?",
-        args: [linkId],
-      },
-      {
-        sql: "DELETE FROM links WHERE id = ?",
-        args: [linkId],
-      },
-    ]);
-    return c.redirect("/dashboard");
-  }
-
-  const groupId = body.splitwise_group_id
-    ? String(body.splitwise_group_id)
-    : null;
-  const accountId = parseInt(String(body.lm_account_id), 10);
+  const accountId = body.lmAccountId;
   if (!Number.isInteger(accountId) || accountId <= 0) {
-    return c.redirect(`/dashboard/links/${linkId}?error=invalid_account`);
+    return c.json({ error: "Invalid account ID" }, 400);
   }
-  const startDate = body.start_date ? String(body.start_date) : null;
-  const includePayments = body.include_payments === "on" ? 1 : 0;
-  const enabled = body.enabled === "on" ? 1 : 0;
 
+  const db = c.get("db");
   await db
     .update(links)
     .set({
-      splitwiseGroupId: groupId,
+      splitwiseGroupId: body.splitwiseGroupId || null,
       lmAccountId: accountId,
-      startDate,
-      includePayments,
-      enabled,
+      startDate: body.startDate || null,
+      includePayments: body.includePayments ? 1 : 0,
+      enabled: body.enabled ? 1 : 0,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(links.id, linkId));
 
-  return c.redirect("/dashboard");
+  return c.json({ ok: true });
 });
 
-// Dry run (returns JSON for async loading)
+api.delete("/links/:id", async (c) => {
+  const linkId = parseInt(c.req.param("id"), 10);
+  const db = c.get("db");
+  const client = db.$client;
+  await client.batch([
+    {
+      sql: "DELETE FROM synced_transactions WHERE link_id = ?",
+      args: [linkId],
+    },
+    {
+      sql: "DELETE FROM sync_log WHERE link_id = ?",
+      args: [linkId],
+    },
+    {
+      sql: "DELETE FROM links WHERE id = ?",
+      args: [linkId],
+    },
+  ]);
+  return c.json({ ok: true });
+});
+
+// --- History ---
+
+api.get("/links/:id/history", async (c) => {
+  const linkId = parseInt(c.req.param("id"), 10);
+  const db = c.get("db");
+  const logs = await db
+    .select()
+    .from(syncLog)
+    .where(eq(syncLog.linkId, linkId))
+    .orderBy(desc(syncLog.startedAt))
+    .limit(50);
+  return c.json(logs);
+});
+
+// --- Dry Run ---
+
 api.get("/links/:id/dry-run", async (c) => {
   const user = c.get("user");
   const linkId = parseInt(c.req.param("id"), 10);
@@ -194,12 +241,13 @@ api.get("/links/:id/dry-run", async (c) => {
       })),
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
+    const message = describeError(err);
     return c.json({ error: message }, 500);
   }
 });
 
-// Manual sync trigger
+// --- Sync ---
+
 api.post("/sync/:linkId", async (c) => {
   const user = c.get("user");
   const linkId = parseInt(c.req.param("linkId"), 10);
@@ -211,19 +259,19 @@ api.post("/sync/:linkId", async (c) => {
     .where(eq(links.id, linkId));
   const link = rows[0];
   if (!link) {
-    return c.redirect("/dashboard");
+    return c.json({ error: "Link not found" }, 404);
   }
 
   try {
     const result = await syncLink(db, link, user);
-    return c.redirect(
-      `/dashboard?synced=${linkId}&created=${result.created}&updated=${result.updated}&deleted=${result.deleted}`,
-    );
+    return c.json({
+      created: result.created,
+      updated: result.updated,
+      deleted: result.deleted,
+    });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return c.redirect(
-      `/dashboard?sync_error=${linkId}&message=${encodeURIComponent(message)}`,
-    );
+    const message = describeError(err);
+    return c.json({ error: message }, 500);
   }
 });
 
