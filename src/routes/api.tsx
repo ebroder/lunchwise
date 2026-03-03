@@ -97,14 +97,18 @@ api.post("/links", async (c) => {
   }
 
   const db = c.get("db");
-  await db.insert(links).values({
-    splitwiseGroupId: groupId,
-    lmAccountId: accountId,
-    startDate,
-    includePayments,
-  });
+  const [created] = await db
+    .insert(links)
+    .values({
+      splitwiseGroupId: groupId,
+      lmAccountId: accountId,
+      startDate,
+      includePayments,
+      enabled: 0,
+    })
+    .returning({ id: links.id });
 
-  return c.redirect("/dashboard");
+  return c.redirect(`/dashboard/links/${created.id}`);
 });
 
 // Update or delete link
