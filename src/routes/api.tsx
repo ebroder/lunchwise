@@ -15,6 +15,20 @@ api.use("*", requireAuth);
 api.post("/settings/lunch-money", async (c) => {
   const body = await c.req.parseBody();
   const db = c.get("db");
+
+  if (body._method === "DELETE") {
+    // Only allow clearing the token when no links exist
+    const existingLinks = await db.select().from(links).limit(1);
+    if (existingLinks.length > 0) {
+      return c.redirect("/dashboard");
+    }
+    await db
+      .update(credentials)
+      .set({ lunchMoneyApiKey: null, updatedAt: new Date().toISOString() })
+      .where(eq(credentials.id, 1));
+    return c.redirect("/dashboard");
+  }
+
   const apiKey = String(body.api_key || "").trim();
 
   if (!apiKey) {

@@ -66,9 +66,26 @@ dashboard.get("/", async (c) => {
             <div class="flex items-center justify-between">
               <span>Lunch Money</span>
               {hasLunchMoney ? (
-                <span class="text-sm text-green-600 dark:text-green-400 font-medium">
-                  Connected
-                </span>
+                <div class="flex items-center gap-3">
+                  <span class="text-sm text-green-600 dark:text-green-400 font-medium">
+                    Connected
+                  </span>
+                  {userLinks.length === 0 ? (
+                    <form method="post" action="/api/settings/lunch-money">
+                      <input type="hidden" name="_method" value="DELETE" />
+                      <button
+                        type="submit"
+                        class="text-xs text-stone-400 dark:text-stone-500 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                      >
+                        Disconnect
+                      </button>
+                    </form>
+                  ) : (
+                    <span class="text-xs text-stone-400 dark:text-stone-500">
+                      Remove all links to disconnect
+                    </span>
+                  )}
+                </div>
               ) : (
                 <span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
                   Not connected
