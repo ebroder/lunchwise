@@ -66,6 +66,6 @@ export function getUserShare(
 
   // net_balance > 0 means user paid more than owed (they're owed money, so it's income/credit)
   // net_balance < 0 means user owes (it's an expense)
-  // Flip sign: positive = expense in Lunch Money
+  // Flip sign: positive = debit in Lunch Money
   return -netBalance;
 }

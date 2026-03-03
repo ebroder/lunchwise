@@ -103,13 +103,13 @@ async function backfillExisting(
   }
 }
 
-// Scan LM transactions and return expense IDs that already exist there
-// (used for dry-run backfill simulation).
-async function getBackfilledIds(
+// Scan LM transactions and return expense IDs that already exist there,
+// along with their current LM amounts (for comparing during backfill).
+async function getBackfilledData(
   link: Link,
   apiKey: string,
-): Promise<Set<string>> {
-  const ids = new Set<string>();
+): Promise<Map<string, { lmAmount: number }>> {
+  const data = new Map<string, { lmAmount: number }>();
   const startDate = link.startDate ?? "2000-01-01";
   const endDate = "2099-12-31";
   const lmTransactions = await getTransactions(apiKey, {
@@ -121,26 +121,32 @@ async function getBackfilledIds(
   for (const tx of lmTransactions) {
     if (!tx.external_id) continue;
     if (!/^\d+$/.test(tx.external_id)) continue;
-    ids.add(tx.external_id);
+    data.set(tx.external_id, { lmAmount: parseFloat(tx.amount) });
   }
 
-  return ids;
+  return data;
 }
 
 // Build a map of tracked expenses. For first sync, either runs real backfill
-// (mutates DB) or simulates it (in-memory only).
+// (mutates DB) or simulates it (in-memory only). Also returns LM amounts
+// for backfilled rows so planSync can compare against Splitwise.
 async function buildTrackedMap(
   db: UserDb,
   link: Link,
   apiKey: string,
   dryRun: boolean,
-): Promise<Map<string, TrackedRow>> {
+): Promise<{
+  tracked: Map<string, TrackedRow>;
+  backfilledAmounts: Map<string, number>;
+}> {
   const tracked = new Map<string, TrackedRow>();
+  const backfilledAmounts = new Map<string, number>();
 
   if (!link.lastSyncedAt) {
+    const backfilledData = await getBackfilledData(link, apiKey);
+
     if (dryRun) {
-      const backfilledIds = await getBackfilledIds(link, apiKey);
-      for (const id of backfilledIds) {
+      for (const [id, data] of backfilledData) {
         tracked.set(id, {
           id: 0,
           linkId: link.id,
@@ -151,9 +157,13 @@ async function buildTrackedMap(
           createdAt: "",
           updatedAt: "",
         });
+        backfilledAmounts.set(id, data.lmAmount);
       }
     } else {
       await backfillExisting(db, link, apiKey);
+      for (const [id, data] of backfilledData) {
+        backfilledAmounts.set(id, data.lmAmount);
+      }
     }
   }
 
@@ -166,7 +176,7 @@ async function buildTrackedMap(
     tracked.set(row.splitwiseExpenseId, row);
   }
 
-  return tracked;
+  return { tracked, backfilledAmounts };
 }
 
 // Phase 1: Plan what actions the sync would take. Pure decision logic,
@@ -185,7 +195,7 @@ async function planSync(
   const actions: PlannedAction[] = [];
   const stamps: { trackedId: number; splitwiseUpdatedAt: string }[] = [];
 
-  const tracked = await buildTrackedMap(db, link, apiKey, dryRun);
+  const { tracked, backfilledAmounts } = await buildTrackedMap(db, link, apiKey, dryRun);
 
   const updatedAfter =
     link.lastSyncedAt ?? link.startDate ?? "2000-01-01T00:00:00Z";
@@ -266,11 +276,26 @@ async function planSync(
       });
     } else if (existing.splitwiseUpdatedAt !== expense.updated_at) {
       if (!existing.splitwiseUpdatedAt) {
-        // Backfilled row: just record the timestamp, no LM update needed
-        stamps.push({
-          trackedId: existing.id,
-          splitwiseUpdatedAt: expense.updated_at ?? "",
-        });
+        // Backfilled row: only update if the amount has drifted
+        const lmAmount = backfilledAmounts.get(String(expense.id));
+        if (lmAmount !== undefined && lmAmount === amount) {
+          stamps.push({
+            trackedId: existing.id,
+            splitwiseUpdatedAt: expense.updated_at ?? "",
+          });
+        } else {
+          actions.push({
+            type: "update",
+            expenseId: String(expense.id),
+            date: lmData.date,
+            payee,
+            amount,
+            currency: expense.currency_code ?? "USD",
+            splitwiseUpdatedAt: expense.updated_at ?? "",
+            lmData,
+            tracked: existing,
+          });
+        }
       } else {
         actions.push({
           type: "update",
@@ -317,7 +342,11 @@ async function executeActions(
       });
       created++;
     } else if (action.type === "update") {
-      await updateTransaction(apiKey, action.tracked!.lmTransactionId, action.lmData);
+      await updateTransaction(apiKey, action.tracked!.lmTransactionId, {
+        amount: action.lmData.amount,
+        currency: action.lmData.currency,
+        notes: action.lmData.notes,
+      });
       await db
         .update(syncedTransactions)
         .set({

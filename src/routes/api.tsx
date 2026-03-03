@@ -162,6 +162,43 @@ api.post("/links/:id", async (c) => {
   return c.redirect("/dashboard");
 });
 
+// Dry run (returns JSON for async loading)
+api.get("/links/:id/dry-run", async (c) => {
+  const user = c.get("user");
+  const linkId = parseInt(c.req.param("id"), 10);
+  const db = c.get("db");
+
+  const rows = await db
+    .select()
+    .from(links)
+    .where(eq(links.id, linkId));
+  const link = rows[0];
+  if (!link) {
+    return c.json({ error: "Link not found" }, 404);
+  }
+
+  try {
+    const result = await syncLink(db, link, user, { dryRun: true });
+    return c.json({
+      expenses_fetched: result.expenses_fetched,
+      created: result.created,
+      updated: result.updated,
+      deleted: result.deleted,
+      actions: (result.actions ?? []).map((a) => ({
+        type: a.type,
+        date: a.date,
+        payee: a.payee,
+        amount: a.amount,
+        currency: a.currency,
+        expenseId: a.expenseId,
+      })),
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return c.json({ error: message }, 500);
+  }
+});
+
 // Manual sync trigger
 api.post("/sync/:linkId", async (c) => {
   const user = c.get("user");

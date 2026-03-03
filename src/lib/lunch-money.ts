@@ -71,6 +71,7 @@ export async function getTransactions(
           start_date: params.start_date,
           end_date: params.end_date,
           include_group_children: true,
+          include_split_parents: true,
           limit,
           offset,
         },
