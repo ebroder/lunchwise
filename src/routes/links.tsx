@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import { eq, desc } from "drizzle-orm";
 import { requireAuth, type AuthEnv } from "../lib/auth.js";
 import { links as linksTable, syncLog } from "../lib/schema-user.js";
-import { syncLink, type PlannedAction } from "../lib/sync.js";
 import { createSplitwiseClient } from "../lib/splitwise.js";
 import { getManualAccounts } from "../lib/lunch-money.js";
 
@@ -211,14 +210,13 @@ links.get("/:id", async (c) => {
 
       <div class="mt-6 pt-6 border-t border-stone-200 dark:border-stone-800 flex items-center justify-between">
         <div class="flex items-center gap-4">
-          <form method="post" action={`/dashboard/links/${linkId}/dry-run`}>
-            <button
-              type="submit"
-              class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
-            >
-              Dry run
-            </button>
-          </form>
+          <button
+            type="button"
+            id="dry-run-btn"
+            class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
+          >
+            Dry run
+          </button>
           <a
             href={`/dashboard/links/${linkId}/history`}
             class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
@@ -237,6 +235,10 @@ links.get("/:id", async (c) => {
           </button>
         </form>
       </div>
+
+      <div id="dry-run-results" class="mt-8 hidden" data-link-id={String(linkId)}></div>
+
+      <script type="module" src="/dry-run.js"></script>
     </div>,
     { title: "Edit Link" },
   );
@@ -346,141 +348,6 @@ links.get("/:id/history", async (c) => {
     </div>,
     { title: "Sync History" },
   );
-});
-
-function formatAmount(amount: number, currency: string): string {
-  const abs = Math.abs(amount).toFixed(2);
-  const sign = amount < 0 ? "-" : "";
-  return `${sign}${currency} ${abs}`;
-}
-
-function actionBadge(type: PlannedAction["type"]): string {
-  if (type === "create") return "text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-950/50 border-green-200 dark:border-green-800";
-  if (type === "update") return "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800";
-  return "text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800";
-}
-
-links.post("/:id/dry-run", async (c) => {
-  const user = c.get("user");
-  const linkId = parseInt(c.req.param("id"), 10);
-  const db = c.get("db");
-
-  const rows = await db
-    .select()
-    .from(linksTable)
-    .where(eq(linksTable.id, linkId));
-  const link = rows[0];
-  if (!link) {
-    return c.redirect("/dashboard");
-  }
-
-  try {
-    const result = await syncLink(db, link, user, { dryRun: true });
-    const actions = result.actions ?? [];
-
-    return c.render(
-      <div>
-        <div class="mb-6">
-          <a
-            href={`/dashboard/links/${linkId}`}
-            class={backLink}
-          >
-            &larr; Back to link
-          </a>
-        </div>
-
-        <h1 class="text-2xl font-bold mb-2">Dry Run Results</h1>
-        <p class={`${muted} mb-6`}>
-          No changes were made. This shows what a sync would do.
-        </p>
-
-        <div class={`${card} p-4 mb-6`}>
-          <div class="flex gap-6 text-sm">
-            <span>
-              Expenses fetched: <span class="font-medium">{result.expenses_fetched}</span>
-            </span>
-            <span>
-              Would create: <span class="font-medium text-green-700 dark:text-green-400">{result.created}</span>
-            </span>
-            <span>
-              Would update: <span class="font-medium text-blue-700 dark:text-blue-400">{result.updated}</span>
-            </span>
-            <span>
-              Would delete: <span class="font-medium text-red-700 dark:text-red-400">{result.deleted}</span>
-            </span>
-          </div>
-        </div>
-
-        {actions.length === 0 ? (
-          <p class={muted}>Nothing to sync.</p>
-        ) : (
-          <div class={`${card} overflow-hidden`}>
-            <table class="w-full text-sm">
-              <thead class="bg-stone-50 dark:bg-stone-800/50 border-b border-stone-200 dark:border-stone-800">
-                <tr>
-                  <th class="text-left px-4 py-2 font-medium text-stone-600 dark:text-stone-400">Action</th>
-                  <th class="text-left px-4 py-2 font-medium text-stone-600 dark:text-stone-400">Date</th>
-                  <th class="text-left px-4 py-2 font-medium text-stone-600 dark:text-stone-400">Payee</th>
-                  <th class="text-right px-4 py-2 font-medium text-stone-600 dark:text-stone-400">Amount</th>
-                  <th class="text-right px-4 py-2 font-medium text-stone-600 dark:text-stone-400">Expense ID</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-stone-100 dark:divide-stone-800">
-                {actions.map((action) => (
-                  <tr>
-                    <td class="px-4 py-2">
-                      <span class={`inline-block px-2 py-0.5 rounded border text-xs font-medium ${actionBadge(action.type)}`}>
-                        {action.type}
-                      </span>
-                    </td>
-                    <td class="px-4 py-2 text-stone-700 dark:text-stone-300">{action.date}</td>
-                    <td class="px-4 py-2 text-stone-700 dark:text-stone-300 max-w-xs truncate">{action.payee}</td>
-                    <td class="px-4 py-2 text-right text-stone-700 dark:text-stone-300 tabular-nums">
-                      {formatAmount(action.amount, action.currency)}
-                    </td>
-                    <td class="px-4 py-2 text-right text-stone-400 dark:text-stone-500 tabular-nums">{action.expenseId}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {actions.length > 0 && (
-          <div class="mt-6 flex gap-3">
-            <form method="post" action={`/api/sync/${linkId}`}>
-              <button type="submit" class={btn}>
-                Run Sync for Real
-              </button>
-            </form>
-            <a
-              href="/dashboard"
-              class="px-6 py-2 rounded-lg text-sm font-medium border border-stone-300 dark:border-stone-700 text-stone-700 dark:text-stone-300 hover:border-stone-400 dark:hover:border-stone-500 transition-colors"
-            >
-              Cancel
-            </a>
-          </div>
-        )}
-      </div>,
-      { title: "Dry Run" },
-    );
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return c.render(
-      <div>
-        <div class="mb-6">
-          <a href="/dashboard" class={backLink}>
-            &larr; Back to dashboard
-          </a>
-        </div>
-        <h1 class="text-2xl font-bold mb-4">Dry Run Failed</h1>
-        <div class="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 text-sm">
-          {message}
-        </div>
-      </div>,
-      { title: "Dry Run Error" },
-    );
-  }
 });
 
 export { links };

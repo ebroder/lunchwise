@@ -165,14 +165,12 @@ dashboard.get("/", async (c) => {
                       </div>
                     </div>
                     <div class="flex items-center gap-2">
-                      <form method="post" action={`/dashboard/links/${link.id}/dry-run`}>
-                        <button
-                          type="submit"
-                          class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 px-3 py-1 rounded border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition-colors"
-                        >
-                          Dry Run
-                        </button>
-                      </form>
+                      <a
+                        href={`/dashboard/links/${link.id}?dry-run`}
+                        class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 px-3 py-1 rounded border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition-colors"
+                      >
+                        Dry Run
+                      </a>
                       <form method="post" action={`/api/sync/${link.id}`}>
                         <button
                           type="submit"
