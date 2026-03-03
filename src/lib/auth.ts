@@ -7,6 +7,7 @@ import { getSharedDb, getUserDb, type UserDb } from "./db.js";
 import { users } from "./schema-shared.js";
 import { credentials } from "./schema-user.js";
 import { env } from "./env.js";
+import { decrypt } from "./crypto.js";
 
 const COOKIE_NAME = "lunchwise_session";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -88,8 +89,10 @@ export const requireAuth = createMiddleware<AuthEnv>(async (c, next) => {
     id: row.id,
     splitwiseUserId: row.splitwiseUserId,
     tursoDbUrl: row.tursoDbUrl,
-    splitwiseAccessToken: cred.splitwiseAccessToken,
-    lunchMoneyApiKey: cred.lunchMoneyApiKey,
+    splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
+    lunchMoneyApiKey: cred.lunchMoneyApiKey
+      ? await decrypt(cred.lunchMoneyApiKey)
+      : null,
   });
   c.set("db", userDb);
   await next();

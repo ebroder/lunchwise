@@ -15,6 +15,7 @@ import {
   type LmInsertTransaction,
 } from "./lunch-money.js";
 import type { User } from "./auth.js";
+import { decrypt } from "./crypto.js";
 
 type Link = typeof links.$inferSelect;
 type TrackedRow = typeof syncedTransactions.$inferSelect;
@@ -432,8 +433,8 @@ export async function syncAllEnabled(): Promise<void> {
       id: row.id,
       splitwiseUserId: row.splitwiseUserId,
       tursoDbUrl: row.tursoDbUrl!,
-      splitwiseAccessToken: cred.splitwiseAccessToken,
-      lunchMoneyApiKey: cred.lunchMoneyApiKey,
+      splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
+      lunchMoneyApiKey: await decrypt(cred.lunchMoneyApiKey),
     };
 
     for (const link of enabledLinks) {

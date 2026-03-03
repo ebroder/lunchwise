@@ -8,6 +8,7 @@ import { credentials } from "../lib/schema-user.js";
 import { createSplitwiseClient } from "../lib/splitwise.js";
 import { createTursoDatabase } from "../lib/turso.js";
 import { env } from "../lib/env.js";
+import { encrypt } from "../lib/crypto.js";
 
 const auth = new Hono();
 
@@ -101,7 +102,7 @@ auth.get("/splitwise/callback", async (c) => {
       await initUserDb(userDb);
 
       await userDb.insert(credentials).values({
-        splitwiseAccessToken: accessToken,
+        splitwiseAccessToken: await encrypt(accessToken),
       });
     } else {
       // Returning user: update access token in per-user DB
@@ -109,7 +110,7 @@ auth.get("/splitwise/callback", async (c) => {
       await userDb
         .update(credentials)
         .set({
-          splitwiseAccessToken: accessToken,
+          splitwiseAccessToken: await encrypt(accessToken),
           updatedAt: new Date().toISOString(),
         })
         .where(eq(credentials.id, 1));

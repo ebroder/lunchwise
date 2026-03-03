@@ -5,6 +5,7 @@ import { credentials, links, syncLog } from "../lib/schema-user.js";
 import { syncLink } from "../lib/sync.js";
 import { createSplitwiseClient } from "../lib/splitwise.js";
 import { createLunchMoneyClient, getManualAccounts } from "../lib/lunch-money.js";
+import { encrypt } from "../lib/crypto.js";
 
 const api = new Hono<AuthEnv>();
 
@@ -13,6 +14,7 @@ api.use("*", requireAuth);
 // Save and validate Lunch Money API key
 api.post("/settings/lunch-money", async (c) => {
   const body = await c.req.parseBody();
+  const db = c.get("db");
   const apiKey = String(body.api_key || "").trim();
 
   if (!apiKey) {
@@ -26,10 +28,12 @@ api.post("/settings/lunch-money", async (c) => {
     return c.redirect("/dashboard?error=invalid_key");
   }
 
-  const db = c.get("db");
   await db
     .update(credentials)
-    .set({ lunchMoneyApiKey: apiKey, updatedAt: new Date().toISOString() })
+    .set({
+      lunchMoneyApiKey: await encrypt(apiKey),
+      updatedAt: new Date().toISOString(),
+    })
     .where(eq(credentials.id, 1));
 
   return c.redirect("/dashboard");
