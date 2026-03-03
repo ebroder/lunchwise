@@ -72,9 +72,11 @@ async function backfillExisting(
   apiKey: string,
 ): Promise<void> {
   const startDate = link.startDate ?? "2000-01-01";
+  const endDate = "2099-12-31";
   const lmTransactions = await getTransactions(apiKey, {
     manual_account_id: link.lmAccountId,
     start_date: startDate,
+    end_date: endDate,
   });
 
   let backfilled = 0;
@@ -109,9 +111,11 @@ async function getBackfilledIds(
 ): Promise<Set<string>> {
   const ids = new Set<string>();
   const startDate = link.startDate ?? "2000-01-01";
+  const endDate = "2099-12-31";
   const lmTransactions = await getTransactions(apiKey, {
     manual_account_id: link.lmAccountId,
     start_date: startDate,
+    end_date: endDate,
   });
 
   for (const tx of lmTransactions) {
