@@ -210,12 +210,22 @@ links.get("/:id", async (c) => {
       </form>
 
       <div class="mt-6 pt-6 border-t border-stone-200 dark:border-stone-800 flex items-center justify-between">
-        <a
-          href={`/dashboard/links/${linkId}/history`}
-          class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
-        >
-          View sync history
-        </a>
+        <div class="flex items-center gap-4">
+          <form method="post" action={`/dashboard/links/${linkId}/dry-run`}>
+            <button
+              type="submit"
+              class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
+            >
+              Dry run
+            </button>
+          </form>
+          <a
+            href={`/dashboard/links/${linkId}/history`}
+            class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
+          >
+            Sync history
+          </a>
+        </div>
         <form method="post" action={`/api/links/${linkId}`}>
           <input type="hidden" name="_method" value="DELETE" />
           <button
