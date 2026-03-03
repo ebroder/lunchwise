@@ -1,0 +1,6 @@
+node_modules/
+dist/
+public/styles.css
+local.db
+local-user-*.db
+.env
