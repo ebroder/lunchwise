@@ -1,6 +1,7 @@
 import { app } from "./app.js";
 import { initEnv } from "./lib/env.js";
-import { syncAllEnabled } from "./lib/sync.js";
+import { syncAllEnabled, describeError } from "./lib/sync.js";
+import { createLogger } from "./lib/logger.js";
 
 export default {
   async fetch(
@@ -18,11 +19,11 @@ export default {
     ctx: ExecutionContext,
   ): Promise<void> {
     initEnv(workerEnv);
+    const log = createLogger({ source: "cron" });
     ctx.waitUntil(
-      syncAllEnabled().then(
-        () => console.log("Cron: sync complete"),
-        (err) => console.error("Cron: sync failed", err),
-      ),
+      syncAllEnabled().catch((err) => {
+        log.error("Cron handler failed", { error: describeError(err) });
+      }),
     );
   },
 };

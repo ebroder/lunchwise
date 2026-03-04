@@ -16,6 +16,7 @@ import {
 } from "./lunch-money.js";
 import type { User } from "./auth.js";
 import { decrypt } from "./crypto.js";
+import { createLogger } from "./logger.js";
 
 type Link = typeof links.$inferSelect;
 
@@ -89,6 +90,7 @@ async function buildTrackedMap(
   link: Link,
   apiKey: string,
   dryRun: boolean,
+  log: ReturnType<typeof createLogger>,
 ): Promise<{
   tracked: Map<string, TrackedRow>;
   backfilledAmounts: Map<string, number>;
@@ -141,11 +143,15 @@ async function buildTrackedMap(
           .onConflictDoNothing();
         backfilled += result.rowsAffected;
       }
-      if (backfilled > 0) {
-        console.log(
-          `Backfilled ${backfilled} existing transactions for link ${link.id}`,
-        );
-      }
+      log.info("Backfilled existing transactions", {
+        lmTransactions: lmTransactions.length,
+        matchedByExternalId: backfillRows.length,
+        rowsInserted: backfilled,
+      });
+    } else {
+      log.info("First sync, no existing LM transactions to backfill", {
+        lmTransactions: lmTransactions.length,
+      });
     }
   }
 
@@ -168,6 +174,7 @@ async function planSync(
   link: Link,
   user: User,
   dryRun: boolean,
+  log: ReturnType<typeof createLogger>,
 ): Promise<{
   actions: PlannedAction[];
   expenses_fetched: number;
@@ -177,7 +184,7 @@ async function planSync(
   const actions: PlannedAction[] = [];
   const stamps: { trackedId: number; splitwiseUpdatedAt: string }[] = [];
 
-  const { tracked, backfilledAmounts } = await buildTrackedMap(db, link, apiKey, dryRun);
+  const { tracked, backfilledAmounts } = await buildTrackedMap(db, link, apiKey, dryRun, log);
 
   const updatedAfter =
     link.lastSyncedAt ?? link.startDate ?? "2000-01-01T00:00:00Z";
@@ -189,18 +196,33 @@ async function planSync(
     updated_after: updatedAfter,
   });
 
+  log.info("Fetched Splitwise expenses", {
+    count: expenses.length,
+    updatedAfter,
+    trackedCount: tracked.size,
+  });
+
+  const skips = { payment: 0, noShare: 0, beforeStart: 0, current: 0 };
+
   for (const expense of expenses) {
-    if (expense.payment && !link.includePayments) continue;
+    const eid = String(expense.id);
+
+    if (expense.payment && !link.includePayments) {
+      skips.payment++;
+      log.debug("Skip expense: payment excluded", { expenseId: eid });
+      continue;
+    }
 
     const amount = getUserShare(expense, user.splitwiseUserId);
-    const existing = tracked.get(String(expense.id));
+    const existing = tracked.get(eid);
 
     // Handle deleted expenses
     if (expense.deleted_at) {
       if (existing && !existing.isDeleted) {
+        log.debug("Plan delete", { expenseId: eid, payee: expense.description });
         actions.push({
           type: "delete",
-          expenseId: String(expense.id),
+          expenseId: eid,
           date: (expense.date ?? "").split("T")[0],
           payee: expense.description ?? "",
           amount: 0,
@@ -212,7 +234,7 @@ async function planSync(
             payee: `[DELETED] ${expense.description}`,
             currency: (expense.currency_code ?? "USD").toLowerCase() as LmInsertTransaction["currency"],
             manual_account_id: link.lmAccountId,
-            external_id: String(expense.id),
+            external_id: eid,
             notes: "",
             status: "reviewed",
           },
@@ -222,12 +244,20 @@ async function planSync(
       continue;
     }
 
-    if (amount === null) continue;
+    if (amount === null) {
+      skips.noShare++;
+      log.debug("Skip expense: no user share", { expenseId: eid });
+      continue;
+    }
 
     // Skip expenses before start_date
     if (link.startDate) {
       const expenseDate = (expense.date ?? "").split("T")[0];
-      if (expenseDate < link.startDate) continue;
+      if (expenseDate < link.startDate) {
+        skips.beforeStart++;
+        log.debug("Skip expense: before start date", { expenseId: eid, date: expenseDate });
+        continue;
+      }
     }
 
     const payee = expense.payment
@@ -240,15 +270,16 @@ async function planSync(
       payee,
       currency: (expense.currency_code ?? "USD").toLowerCase() as LmInsertTransaction["currency"],
       manual_account_id: link.lmAccountId,
-      external_id: String(expense.id),
+      external_id: eid,
       notes: buildNotes(expense, amount),
       status: "unreviewed" as const,
     };
 
     if (!existing) {
+      log.debug("Plan create", { expenseId: eid, payee, amount });
       actions.push({
         type: "create",
-        expenseId: String(expense.id),
+        expenseId: eid,
         date: lmData.date,
         payee,
         amount,
@@ -259,16 +290,20 @@ async function planSync(
     } else if (existing.splitwiseUpdatedAt !== expense.updated_at) {
       if (existing.splitwiseUpdatedAt === "backfill") {
         // Backfilled row: only update if the amount has drifted
-        const lmAmount = backfilledAmounts.get(String(expense.id));
+        const lmAmount = backfilledAmounts.get(eid);
         if (lmAmount !== undefined && lmAmount === amount) {
+          log.debug("Stamp backfill (amount matches)", { expenseId: eid, amount });
           stamps.push({
             trackedId: existing.id,
             splitwiseUpdatedAt: expense.updated_at ?? "",
           });
         } else {
+          log.debug("Plan update (backfill drift)", {
+            expenseId: eid, lmAmount, swAmount: amount,
+          });
           actions.push({
             type: "update",
-            expenseId: String(expense.id),
+            expenseId: eid,
             date: lmData.date,
             payee,
             amount,
@@ -279,9 +314,10 @@ async function planSync(
           });
         }
       } else {
+        log.debug("Plan update", { expenseId: eid, payee, amount });
         actions.push({
           type: "update",
-          expenseId: String(expense.id),
+          expenseId: eid,
           date: lmData.date,
           payee,
           amount,
@@ -291,8 +327,18 @@ async function planSync(
           tracked: existing,
         });
       }
+    } else {
+      skips.current++;
     }
   }
+
+  log.info("Plan complete", {
+    creates: actions.filter((a) => a.type === "create").length,
+    updates: actions.filter((a) => a.type === "update").length,
+    deletes: actions.filter((a) => a.type === "delete").length,
+    stamps: stamps.length,
+    skips,
+  });
 
   return { actions, expenses_fetched: expenses.length, stamps };
 }
@@ -304,10 +350,17 @@ async function executeActions(
   link: Link,
   apiKey: string,
   actions: PlannedAction[],
+  log: ReturnType<typeof createLogger>,
 ): Promise<{ created: number; updated: number; deleted: number }> {
   const creates = actions.filter((a) => a.type === "create");
   const updates = actions.filter((a) => a.type === "update");
   const deletes = actions.filter((a) => a.type === "delete");
+
+  log.info("Executing actions", {
+    creates: creates.length,
+    updates: updates.length,
+    deletes: deletes.length,
+  });
 
   const dbStmts: Array<{ sql: string; args: (string | number)[] }> = [];
 
@@ -317,6 +370,7 @@ async function executeActions(
       apiKey,
       creates.map((a) => a.lmData),
     );
+    log.info("LM insert complete", { requested: creates.length, returned: inserted.length });
     const byExtId = new Map<string, number>();
     for (const tx of inserted) {
       if (tx.external_id) byExtId.set(tx.external_id, tx.id);
@@ -346,6 +400,7 @@ async function executeActions(
         notes: a.lmData.notes,
       })),
     );
+    log.info("LM update complete", { count: updates.length });
     for (const action of updates) {
       dbStmts.push({
         sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, is_deleted = 0, updated_at = datetime('now') WHERE id = ?",
@@ -364,6 +419,7 @@ async function executeActions(
         amount: 0,
       })),
     );
+    log.info("LM delete (zero-out) complete", { count: deletes.length });
     for (const action of deletes) {
       dbStmts.push({
         sql: "UPDATE synced_transactions SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?",
@@ -378,6 +434,7 @@ async function executeActions(
     for (let i = 0; i < dbStmts.length; i += BATCH) {
       await db.$client.batch(dbStmts.slice(i, i + BATCH));
     }
+    log.info("DB writes complete", { statements: dbStmts.length });
   }
 
   return {
@@ -397,10 +454,18 @@ export async function syncLink(
   if (!apiKey) throw new Error("Lunch Money API key not configured");
 
   const dryRun = options?.dryRun ?? false;
+  const log = createLogger({ userId: user.id, linkId: link.id, dryRun });
   const syncStartedAt = new Date().toISOString();
 
+  log.info("Sync started", {
+    groupId: link.splitwiseGroupId,
+    lmAccountId: link.lmAccountId,
+    lastSyncedAt: link.lastSyncedAt,
+    startDate: link.startDate,
+  });
+
   // Plan phase: decide what to do (shared logic for dry run and real sync)
-  const { actions, expenses_fetched, stamps } = await planSync(db, link, user, dryRun);
+  const { actions, expenses_fetched, stamps } = await planSync(db, link, user, dryRun, log);
 
   const result: SyncResult = {
     expenses_fetched,
@@ -425,7 +490,7 @@ export async function syncLink(
   }
 
   try {
-    await executeActions(db, link, apiKey, actions);
+    await executeActions(db, link, apiKey, actions, log);
 
     // Record timestamps for backfilled rows (no LM update needed).
     // Batch to stay within Cloudflare Workers subrequest limits.
@@ -438,6 +503,7 @@ export async function syncLink(
       for (let i = 0; i < stmts.length; i += BATCH) {
         await db.$client.batch(stmts.slice(i, i + BATCH));
       }
+      log.info("Stamped backfill rows", { count: stamps.length });
     }
 
     // Update sync cursor
@@ -457,7 +523,14 @@ export async function syncLink(
         deleted: result.deleted,
       })
       .where(eq(syncLog.id, logEntryId));
+
+    log.info("Sync complete", {
+      created: result.created,
+      updated: result.updated,
+      deleted: result.deleted,
+    });
   } catch (err) {
+    log.error("Sync failed", { error: describeError(err) });
     await db
       .update(syncLog)
       .set({
@@ -477,30 +550,49 @@ export async function syncLink(
 }
 
 export async function syncAllEnabled(): Promise<void> {
+  const log = createLogger({ source: "cron" });
+  const cronStart = Date.now();
+
   const shared = getSharedDb();
   const allUsers = await shared
     .select()
     .from(users)
     .where(isNotNull(users.tursoDbUrl));
 
+  log.info("Cron started", { users: allUsers.length });
+
+  let totalLinks = 0;
+  let successes = 0;
+  let failures = 0;
+
   for (const row of allUsers) {
+    const userLog = log.with({ userId: row.id });
     const userDb = getUserDb(row.tursoDbUrl!);
 
     // Clean up stale sync_log entries from interrupted runs
-    await userDb.run(sql`
+    const cleaned = await userDb.run(sql`
       UPDATE sync_log
       SET status = 'error', finished_at = datetime('now'), error_message = 'Process interrupted'
       WHERE status = 'running'
     `);
+    if (cleaned.rowsAffected > 0) {
+      userLog.warn("Cleaned stale sync_log entries", { count: cleaned.rowsAffected });
+    }
 
     const creds = await userDb.select().from(credentials).limit(1);
     const cred = creds[0];
-    if (!cred?.lunchMoneyApiKey) continue;
+    if (!cred?.lunchMoneyApiKey) {
+      userLog.warn("Skipping user: no Lunch Money API key");
+      continue;
+    }
 
     const enabledLinks = await userDb
       .select()
       .from(links)
       .where(eq(links.enabled, 1));
+
+    userLog.info("Processing user", { enabledLinks: enabledLinks.length });
+    totalLinks += enabledLinks.length;
 
     const user: User = {
       id: row.id,
@@ -512,15 +604,22 @@ export async function syncAllEnabled(): Promise<void> {
 
     for (const link of enabledLinks) {
       try {
-        const result = await syncLink(userDb, link, user);
-        console.log(
-          `Synced link ${link.id} (user ${row.id}): ${result.created} created, ${result.updated} updated, ${result.deleted} deleted`,
-        );
+        await syncLink(userDb, link, user);
+        successes++;
       } catch (err) {
-        console.error(`Sync failed for link ${link.id} (user ${row.id}): ${describeError(err)}`);
+        failures++;
+        // syncLink already logs the error, no need to duplicate
       }
 
       await new Promise((r) => setTimeout(r, 500));
     }
   }
+
+  log.info("Cron complete", {
+    users: allUsers.length,
+    totalLinks,
+    successes,
+    failures,
+    elapsedMs: Date.now() - cronStart,
+  });
 }

@@ -6,6 +6,7 @@ import { syncLink, describeError } from "../lib/sync.js";
 import { createSplitwiseClient } from "../lib/splitwise.js";
 import { createLunchMoneyClient, getManualAccounts } from "../lib/lunch-money.js";
 import { encrypt } from "../lib/crypto.js";
+import { createLogger } from "../lib/logger.js";
 
 const api = new Hono<AuthEnv>();
 
@@ -69,6 +70,8 @@ api.get("/splitwise/groups", async (c) => {
   const { data, error } = await sw.GET("/get_groups");
 
   if (error) {
+    const log = createLogger({ source: "api", endpoint: "splitwise/groups" });
+    log.error("Failed to fetch Splitwise groups", { error });
     return c.json({ error: "Failed to fetch groups" }, 500);
   }
 
@@ -84,7 +87,9 @@ api.get("/lunch-money/accounts", async (c) => {
   try {
     const accounts = await getManualAccounts(user.lunchMoneyApiKey);
     return c.json(accounts);
-  } catch {
+  } catch (err) {
+    const log = createLogger({ source: "api", endpoint: "lunch-money/accounts" });
+    log.error("Failed to fetch LM accounts", { error: describeError(err) });
     return c.json({ error: "Failed to fetch accounts" }, 500);
   }
 });
@@ -242,6 +247,8 @@ api.get("/links/:id/dry-run", async (c) => {
     });
   } catch (err) {
     const message = describeError(err);
+    const log = createLogger({ source: "api", endpoint: "dry-run", linkId });
+    log.error("Dry run failed", { error: message });
     return c.json({ error: message }, 500);
   }
 });
@@ -271,6 +278,8 @@ api.post("/sync/:linkId", async (c) => {
     });
   } catch (err) {
     const message = describeError(err);
+    const log = createLogger({ source: "api", endpoint: "sync", linkId });
+    log.error("Sync failed", { error: message });
     return c.json({ error: message }, 500);
   }
 });

@@ -41,6 +41,7 @@ src/
     env.ts           Shared env bindings
     db.ts            Turso/Drizzle client management, LRU cache for user DBs
     auth.ts          JWT sessions (jose), requireAuth + requireAuthJson
+    logger.ts        Structured JSON logger (no deps, LOG_LEVEL via env)
     turso.ts         Turso Platform API (creating per-user databases)
     sync.ts          Core sync logic (Splitwise -> Lunch Money)
     splitwise.ts     Splitwise API client (openapi-fetch)
@@ -90,6 +91,22 @@ Required secrets: `TURSO_SHARED_DB_URL`, `TURSO_AUTH_TOKEN`,
 
 Static assets (Vite output + Tailwind CSS in `dist/client/`) are served via
 Workers asset binding.
+
+## Debugging
+
+Structured JSON logging via `src/lib/logger.ts`. All sync operations,
+API errors, and the cron handler emit structured logs with context fields
+(userId, linkId, etc.).
+
+- **Live logs in production**: `wrangler tail --format json`
+- **Verbose per-expense tracing**: Set `LOG_LEVEL=debug` in wrangler.toml
+  `[vars]` (or via `wrangler secret put`). This logs every skip reason,
+  create/update/delete decision, and backfill match in the sync planner.
+  Default level is `info`.
+- **Dry-run endpoint**: `GET /api/links/:id/dry-run` returns planned
+  actions without side effects. Useful for testing sync behavior.
+- **Sync history**: Per-link sync results (counts, errors) are stored in
+  the `sync_log` table and viewable in the dashboard UI.
 
 ## Notes
 

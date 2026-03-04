@@ -9,6 +9,7 @@ import { createSplitwiseClient } from "../lib/splitwise.js";
 import { createTursoDatabase } from "../lib/turso.js";
 import { env } from "../lib/env.js";
 import { encrypt } from "../lib/crypto.js";
+import { createLogger } from "../lib/logger.js";
 
 const auth = new Hono();
 
@@ -119,7 +120,10 @@ auth.get("/splitwise/callback", async (c) => {
     await createSession(c, userId);
     return c.redirect("/dashboard");
   } catch (err) {
-    console.error("OAuth callback failed:", err);
+    const log = createLogger({ source: "oauth" });
+    log.error("OAuth callback failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return c.text("Internal server error", 500);
   }
 });
