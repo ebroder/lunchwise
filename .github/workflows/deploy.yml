@@ -16,6 +16,7 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - run: npm run build
       - run: npm run typecheck
       - run: npm test
 
@@ -23,5 +24,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          preCommands: npm run build
           command: deploy
