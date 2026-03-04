@@ -1,5 +1,6 @@
 node_modules/
 dist/
+coverage/
 public/styles.css
 public/app.js
 src/generated/
