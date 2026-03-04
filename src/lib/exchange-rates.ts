@@ -42,10 +42,11 @@ export async function getExchangeRates(
 ): Promise<ExchangeRates> {
   await shared.run(sql.raw(ENSURE_TABLE_SQL));
 
-  const row = await shared.get<{
+  const rows = await shared.all<{
     rates_json: string;
     next_update_at: number;
   }>(sql`SELECT rates_json, next_update_at FROM exchange_rate_cache WHERE id = 1`);
+  const row = rows[0];
 
   const nowUnix = Math.floor(Date.now() / 1000);
 

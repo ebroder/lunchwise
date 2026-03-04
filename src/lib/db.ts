@@ -155,10 +155,10 @@ export async function initUserDb(db: UserDb): Promise<void> {
   `);
   await db.run(sql`INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)`);
 
-  const versionRow = await db.get<{ version: number }>(
+  const versionRows = await db.all<{ version: number }>(
     sql`SELECT version FROM schema_version WHERE id = 1`,
   );
-  const currentVersion = versionRow?.version ?? 0;
+  const currentVersion = versionRows[0]?.version ?? 0;
   const latestVersion = migrations.length > 0
     ? migrations[migrations.length - 1].version
     : 0;
