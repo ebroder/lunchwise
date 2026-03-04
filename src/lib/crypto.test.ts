@@ -3,7 +3,7 @@ import { env } from "./env.js";
 import { encrypt, decrypt } from "./crypto.js";
 
 // Generate a deterministic 32-byte test key (base64-encoded)
-const TEST_KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(0xAB)));
+const TEST_KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(0xab)));
 
 beforeEach(() => {
   env.ENCRYPTION_KEYS = JSON.stringify({ "1": TEST_KEY });
