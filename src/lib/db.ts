@@ -144,11 +144,21 @@ export async function initUserDb(db: UserDb): Promise<void> {
       ON sync_log(link_id, started_at DESC)
   `);
 
-  // Run versioned migrations for existing DBs
-  const versionResult = await db.get<{ user_version: number }>(
-    sql`PRAGMA user_version`,
+  // Run versioned migrations for existing DBs.
+  // Uses a table instead of PRAGMA user_version since Turso's HTTP API
+  // doesn't support PRAGMA writes.
+  await db.run(sql`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      version INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  await db.run(sql`INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)`);
+
+  const versionRow = await db.get<{ version: number }>(
+    sql`SELECT version FROM schema_version WHERE id = 1`,
   );
-  const currentVersion = versionResult?.user_version ?? 0;
+  const currentVersion = versionRow?.version ?? 0;
   const latestVersion = migrations.length > 0
     ? migrations[migrations.length - 1].version
     : 0;
@@ -168,7 +178,7 @@ export async function initUserDb(db: UserDb): Promise<void> {
         }
       }
     }
-    await db.run(sql.raw(`PRAGMA user_version = ${latestVersion}`));
+    await db.run(sql`UPDATE schema_version SET version = ${latestVersion} WHERE id = 1`);
   }
 
   // Clean up stale sync_log entries from interrupted runs
