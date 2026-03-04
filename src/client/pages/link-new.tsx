@@ -1,6 +1,13 @@
 import { useState, useEffect } from "preact/hooks";
 import { useLocation, Link } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
+import {
+  Button,
+  card,
+  inputClass,
+  labelClass,
+  alertError,
+} from "../components/ui.js";
 
 interface Group {
   id: number;
@@ -13,14 +20,6 @@ interface Account {
   display_name: string | null;
   currency: string;
 }
-
-const card =
-  "bg-white dark:bg-stone-900 rounded-lg border border-stone-200 dark:border-stone-800";
-const input =
-  "w-full rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-stone-900 dark:focus:ring-stone-400 focus:border-transparent";
-const label = "block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1";
-const btn =
-  "bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-6 py-2 rounded-lg text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors disabled:opacity-50";
 
 export function LinkNew() {
   const [, navigate] = useLocation();
@@ -79,7 +78,7 @@ export function LinkNew() {
       <div class="mb-6">
         <Link
           href="/dashboard"
-          class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+          class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 cursor-pointer"
         >
           &larr; Back to dashboard
         </Link>
@@ -88,7 +87,7 @@ export function LinkNew() {
       <h1 class="text-2xl font-bold mb-6">New Sync Link</h1>
 
       {error && (
-        <div class="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 mb-6 text-sm">
+        <div class={alertError}>
           {error}
         </div>
       )}
@@ -98,9 +97,9 @@ export function LinkNew() {
       ) : (
         <form onSubmit={handleSubmit} class={`${card} p-6 space-y-5`}>
           <div>
-            <label class={label}>Splitwise Group</label>
+            <label class={labelClass}>Splitwise Group</label>
             <select
-              class={input}
+              class={inputClass}
               value={groupId}
               onChange={(e) =>
                 setGroupId((e.target as HTMLSelectElement).value)
@@ -116,9 +115,9 @@ export function LinkNew() {
           </div>
 
           <div>
-            <label class={label}>Lunch Money Account</label>
+            <label class={labelClass}>Lunch Money Account</label>
             <select
-              class={input}
+              class={inputClass}
               required
               value={accountId}
               onChange={(e) =>
@@ -135,10 +134,10 @@ export function LinkNew() {
           </div>
 
           <div>
-            <label class={label}>Start Date</label>
+            <label class={labelClass}>Start Date</label>
             <input
               type="date"
-              class={input}
+              class={inputClass}
               value={startDate}
               onInput={(e) =>
                 setStartDate((e.target as HTMLInputElement).value)
@@ -190,9 +189,9 @@ export function LinkNew() {
             </p>
           </div>
 
-          <button type="submit" disabled={saving} class={btn}>
+          <Button type="submit" disabled={saving}>
             {saving ? "Creating..." : "Create Link"}
-          </button>
+          </Button>
         </form>
       )}
     </div>

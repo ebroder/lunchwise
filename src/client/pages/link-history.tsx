@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { Link } from "wouter";
 import { api, ApiError } from "../lib/api.js";
+import { card, alertError } from "../components/ui.js";
 
 interface LogEntry {
   id: number;
@@ -13,9 +14,6 @@ interface LogEntry {
   deleted: number | null;
   errorMessage: string | null;
 }
-
-const card =
-  "bg-white dark:bg-stone-900 rounded-lg border border-stone-200 dark:border-stone-800";
 
 export function LinkHistory({ params }: { params: { id: string } }) {
   const linkId = params.id;
@@ -39,7 +37,7 @@ export function LinkHistory({ params }: { params: { id: string } }) {
       <div class="mb-6">
         <Link
           href={`/dashboard/links/${linkId}`}
-          class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+          class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 cursor-pointer"
         >
           &larr; Back to link
         </Link>
@@ -48,7 +46,7 @@ export function LinkHistory({ params }: { params: { id: string } }) {
       <h1 class="text-2xl font-bold mb-6">Sync History</h1>
 
       {error && (
-        <div class="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 text-sm">
+        <div class={alertError}>
           {error}
         </div>
       )}

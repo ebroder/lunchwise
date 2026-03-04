@@ -1,6 +1,13 @@
 import { useState, useEffect } from "preact/hooks";
 import { Link } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
+import {
+  Button,
+  card,
+  inputClass,
+  alertSuccess,
+  alertError,
+} from "../components/ui.js";
 
 interface SyncLink {
   id: number;
@@ -11,9 +18,6 @@ interface SyncLink {
   lastSyncedAt: string | null;
   createdAt: string;
 }
-
-const card =
-  "bg-white dark:bg-stone-900 rounded-lg border border-stone-200 dark:border-stone-800";
 
 export function Dashboard() {
   const [lmConnected, setLmConnected] = useState<boolean | null>(null);
@@ -103,13 +107,7 @@ export function Dashboard() {
       <h1 class="text-2xl font-bold mb-8">Dashboard</h1>
 
       {alert && (
-        <div
-          class={
-            alert.type === "success"
-              ? "bg-green-50 dark:bg-green-950/50 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-300 rounded-lg px-4 py-3 mb-6 text-sm"
-              : "bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 mb-6 text-sm"
-          }
-        >
+        <div class={alert.type === "success" ? alertSuccess : alertError}>
           {alert.message}
         </div>
       )}
@@ -140,7 +138,7 @@ export function Dashboard() {
                     <button
                       type="button"
                       onClick={disconnectLm}
-                      class="text-xs text-stone-400 dark:text-stone-500 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                      class="text-xs text-stone-400 dark:text-stone-500 hover:text-red-600 dark:hover:text-red-400 transition-colors cursor-pointer"
                     >
                       Disconnect
                     </button>
@@ -181,15 +179,11 @@ export function Dashboard() {
                 onInput={(e) => setApiKey((e.target as HTMLInputElement).value)}
                 placeholder="Your Lunch Money API key"
                 required
-                class="flex-1 rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-stone-900 dark:focus:ring-stone-400 focus:border-transparent"
+                class={`flex-1 ${inputClass}`}
               />
-              <button
-                type="submit"
-                disabled={savingKey}
-                class="bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-4 py-2 rounded-lg text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors disabled:opacity-50"
-              >
+              <Button type="submit" disabled={savingKey} class="px-4">
                 {savingKey ? "Saving..." : "Save"}
-              </button>
+              </Button>
             </form>
           </div>
         )}
@@ -201,7 +195,7 @@ export function Dashboard() {
               <h2 class="text-lg font-semibold">Sync Links</h2>
               <Link
                 href="/dashboard/links/new"
-                class="bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-4 py-2 rounded-lg text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors"
+                class="bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-4 py-2 rounded-lg text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors cursor-pointer"
               >
                 New Link
               </Link>
@@ -249,27 +243,27 @@ export function Dashboard() {
                     <div class="flex items-center gap-2">
                       <Link
                         href={`/dashboard/links/${link.id}?dry-run`}
-                        class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 px-3 py-1 rounded border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition-colors"
+                        class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 px-3 py-1 rounded border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition-colors cursor-pointer"
                       >
                         Dry Run
                       </Link>
-                      <button
+                      <Button
+                        variant="secondary"
                         type="button"
                         disabled={syncingId === link.id}
                         onClick={() => syncNow(link.id)}
-                        class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 px-3 py-1 rounded border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition-colors disabled:opacity-50"
                       >
                         {syncingId === link.id ? "Syncing..." : "Sync Now"}
-                      </button>
+                      </Button>
                       <Link
                         href={`/dashboard/links/${link.id}/history`}
-                        class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+                        class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 cursor-pointer"
                       >
                         History
                       </Link>
                       <Link
                         href={`/dashboard/links/${link.id}`}
-                        class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+                        class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 cursor-pointer"
                       >
                         Edit
                       </Link>

@@ -14,7 +14,7 @@ export function App() {
           </Link>
           <a
             href="/auth/logout"
-            class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+            class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 cursor-pointer"
           >
             Log out
           </a>

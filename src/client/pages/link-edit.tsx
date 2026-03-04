@@ -1,6 +1,14 @@
 import { useState, useEffect } from "preact/hooks";
 import { useLocation, useSearch, Link as WouterLink } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
+import {
+  Button,
+  card,
+  inputClass,
+  labelClass,
+  alertSuccess,
+  alertError,
+} from "../components/ui.js";
 
 interface SyncLink {
   id: number;
@@ -49,14 +57,7 @@ interface DryRunResult {
   balance: BalancePreview;
 }
 
-const card =
-  "bg-white dark:bg-stone-900 rounded-lg border border-stone-200 dark:border-stone-800";
-const input =
-  "w-full rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-stone-900 dark:focus:ring-stone-400 focus:border-transparent";
-const labelCls =
-  "block text-sm font-medium text-stone-700 dark:text-stone-300 mb-1";
-const btn =
-  "bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-6 py-2 rounded-lg text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors disabled:opacity-50";
+
 
 function badgeClass(type: string) {
   if (type === "create")
@@ -227,7 +228,7 @@ export function LinkEdit({ params }: { params: { id: string } }) {
       <div class="mb-6">
         <WouterLink
           href="/dashboard"
-          class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+          class="text-sm text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 cursor-pointer"
         >
           &larr; Back to dashboard
         </WouterLink>
@@ -238,28 +239,22 @@ export function LinkEdit({ params }: { params: { id: string } }) {
       {loading ? (
         <p class="text-sm text-stone-500 dark:text-stone-400">Loading...</p>
       ) : error ? (
-        <div class="bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 text-sm">
+        <div class={alertError}>
           {error}
         </div>
       ) : (<>
 
       {alert && (
-        <div
-          class={
-            alert.type === "success"
-              ? "bg-green-50 dark:bg-green-950/50 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-300 rounded-lg px-4 py-3 mb-6 text-sm"
-              : "bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 mb-6 text-sm"
-          }
-        >
+        <div class={alert.type === "success" ? alertSuccess : alertError}>
           {alert.message}
         </div>
       )}
 
       <form onSubmit={handleSubmit} class={`${card} p-6 space-y-5`}>
         <div>
-          <label class={labelCls}>Splitwise Group</label>
+          <label class={labelClass}>Splitwise Group</label>
           <select
-            class={input}
+            class={inputClass}
             value={groupId}
             onChange={(e) => setGroupId((e.target as HTMLSelectElement).value)}
           >
@@ -273,9 +268,9 @@ export function LinkEdit({ params }: { params: { id: string } }) {
         </div>
 
         <div>
-          <label class={labelCls}>Lunch Money Account</label>
+          <label class={labelClass}>Lunch Money Account</label>
           <select
-            class={input}
+            class={inputClass}
             required
             value={accountId}
             onChange={(e) =>
@@ -291,10 +286,10 @@ export function LinkEdit({ params }: { params: { id: string } }) {
         </div>
 
         <div>
-          <label class={labelCls}>Start Date</label>
+          <label class={labelClass}>Start Date</label>
           <input
             type="date"
-            class={input}
+            class={inputClass}
             value={startDate}
             onInput={(e) =>
               setStartDate((e.target as HTMLInputElement).value)
@@ -362,36 +357,36 @@ export function LinkEdit({ params }: { params: { id: string } }) {
         </div>
 
         <div class="flex gap-3">
-          <button type="submit" disabled={saving} class={btn}>
+          <Button type="submit" disabled={saving}>
             {saving ? "Saving..." : "Save Changes"}
-          </button>
+          </Button>
         </div>
       </form>
 
       <div class="mt-6 pt-6 border-t border-stone-200 dark:border-stone-800 flex items-center justify-between">
         <div class="flex items-center gap-4">
-          <button
+          <Button
+            variant="ghost"
             type="button"
             onClick={runDryRun}
             disabled={dryRunState === "loading"}
-            class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
           >
             {dryRunState === "loading" ? "Running..." : "Dry run"}
-          </button>
+          </Button>
           <WouterLink
             href={`/dashboard/links/${linkId}/history`}
-            class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100"
+            class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 cursor-pointer"
           >
             Sync history
           </WouterLink>
         </div>
-        <button
+        <Button
+          variant="destructive"
           type="button"
           onClick={handleDelete}
-          class="text-sm text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300"
         >
           Delete this link
-        </button>
+        </Button>
       </div>
 
       {/* Dry run results */}
@@ -404,7 +399,7 @@ export function LinkEdit({ params }: { params: { id: string } }) {
       )}
 
       {dryRunState === "error" && (
-        <div class="mt-8 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 text-sm">
+        <div class={`mt-8 ${alertError}`}>
           {dryRunError}
         </div>
       )}
@@ -530,14 +525,13 @@ export function LinkEdit({ params }: { params: { id: string } }) {
                 </table>
               </div>
               <div class="mt-4">
-                <button
+                <Button
                   type="button"
                   onClick={runSync}
                   disabled={syncing}
-                  class={btn}
                 >
                   {syncing ? "Syncing..." : "Run Sync for Real"}
-                </button>
+                </Button>
               </div>
             </>
           )}

@@ -17,7 +17,7 @@ landing.get("/", async (c) => {
           <span class="font-serif text-xl">Lunchwise</span>
           <a
             href="/auth/splitwise"
-            class="text-sm font-medium text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition-colors"
+            class="text-sm font-medium text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition-colors cursor-pointer"
           >
             Sign in
           </a>
@@ -48,7 +48,7 @@ landing.get("/", async (c) => {
           <div class="animate-fade-up mt-12" style="animation-delay: 0.3s">
             <a
               href="/auth/splitwise"
-              class="inline-block bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-8 py-4 rounded-full text-base font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors shadow-sm"
+              class="inline-block bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-8 py-4 rounded-full text-base font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors shadow-sm cursor-pointer"
             >
               Connect with Splitwise &rarr;
             </a>
@@ -140,7 +140,7 @@ landing.get("/", async (c) => {
           </p>
           <a
             href="/auth/splitwise"
-            class="inline-block bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-8 py-4 rounded-full text-base font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors shadow-sm"
+            class="inline-block bg-stone-900 dark:bg-white text-white dark:text-stone-900 px-8 py-4 rounded-full text-base font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition-colors shadow-sm cursor-pointer"
           >
             Connect with Splitwise &rarr;
           </a>

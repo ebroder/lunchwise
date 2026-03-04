@@ -12,13 +12,16 @@ server-rendered JSX. The authenticated dashboard is a client-side SPA built
 with Preact + wouter, bundled by Vite. Tailwind CSS for styling.
 
 **Database**: Turso (libsql over HTTP). Multi-tenant design with two tiers:
-- Shared DB (`users` table) stores user IDs and per-user DB URLs
+- Shared DB (`users` table, `exchange_rate_cache` table) stores user IDs,
+  per-user DB URLs, and cached exchange rates
 - Per-user DBs store credentials, sync links, transaction mappings, and sync logs
 - Each new user gets a dedicated Turso database created via the Platform API
 
 Schema is defined in Drizzle ORM (`src/lib/schema-shared.ts`,
-`src/lib/schema-user.ts`) but managed externally (no auto-migration on
-startup). The shared DB schema was created via `turso db shell`.
+`src/lib/schema-user.ts`). Shared DB schema changes are applied manually
+via `turso db shell`. Per-user DB migrations are versioned in `initUserDb()`
+(in `db.ts`) using a `schema_version` table, and run automatically on auth
+and cron (deduplicated per isolate via a module-level Set).
 
 **Environment**: Workers env bindings flow through `src/lib/env.ts` (a
 mutable module-level object populated by the entry point before each
@@ -43,7 +46,8 @@ src/
     auth.ts          JWT sessions (jose), requireAuth + requireAuthJson
     logger.ts        Structured JSON logger (no deps, LOG_LEVEL via env)
     turso.ts         Turso Platform API (creating per-user databases)
-    sync.ts          Core sync logic (Splitwise -> Lunch Money)
+    sync.ts          Core sync logic (Splitwise -> Lunch Money, balance sync)
+    exchange-rates.ts Cached exchange rates (open.er-api.com, shared DB)
     splitwise.ts     Splitwise API client (openapi-fetch)
     lunch-money.ts   Lunch Money API client (openapi-fetch)
     schema-shared.ts Drizzle schema for shared DB
@@ -113,7 +117,11 @@ API errors, and the cron handler emit structured logs with context fields
 - OAuth token exchange with Splitwise is done manually (not via arctic)
   because Splitwise rejects client credentials sent as HTTP Basic auth,
   which is how arctic sends them.
+- Turso's HTTP API does not support `PRAGMA` writes. Use tables for any
+  persistent metadata (e.g. `schema_version` for migration tracking).
+- Drizzle's `.get()` throws `TypeError` on Turso's HTTP backend when a
+  raw SQL query returns no rows. Use `.all()` and take `[0]` instead.
 - The `initSharedDb()` function was removed. Shared DB schema changes need
   to be applied manually via `turso db shell`.
-- Per-user DB schema is still created on-demand (`initUserDb()` runs when
-  a new user signs up).
+- `initUserDb()` runs on auth and cron (not just signup) so existing users
+  pick up new migrations. Deduplicated per isolate with a `Set<string>`.
