@@ -1,0 +1,18 @@
+# Turso
+TURSO_SHARED_DB_URL=libsql://...
+TURSO_AUTH_TOKEN=
+TURSO_PLATFORM_API_TOKEN=
+TURSO_ORG=
+TURSO_GROUP=
+
+# Auth
+SESSION_SECRET=          # min 32 characters
+SPLITWISE_CLIENT_ID=
+SPLITWISE_CLIENT_SECRET=
+
+# App
+APP_URL=http://localhost:3000
+NODE_ENV=development
+
+# Encryption
+ENCRYPTION_KEYS=         # JSON object: {"1": "<base64-encoded-32-byte-key>"}
