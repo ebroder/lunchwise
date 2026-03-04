@@ -175,7 +175,7 @@ export function Dashboard() {
             </p>
             <form onSubmit={saveApiKey} class="flex gap-3">
               <input
-                type="text"
+                type="password"
                 value={apiKey}
                 onInput={(e) => setApiKey((e.target as HTMLInputElement).value)}
                 placeholder="Your Lunch Money API key"

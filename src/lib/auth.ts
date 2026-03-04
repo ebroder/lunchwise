@@ -15,6 +15,8 @@ const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 function getSecret(): Uint8Array {
   const secret = env.SESSION_SECRET;
   if (!secret) throw new Error("SESSION_SECRET is required");
+  if (secret.length < 32)
+    throw new Error("SESSION_SECRET must be at least 32 characters");
   return new TextEncoder().encode(secret);
 }
 
@@ -41,7 +43,9 @@ export async function getUserId(c: Context): Promise<number | null> {
   const token = getCookie(c, COOKIE_NAME);
   if (!token) return null;
   try {
-    const { payload } = await jwtVerify(token, getSecret());
+    const { payload } = await jwtVerify(token, getSecret(), {
+      algorithms: ["HS256"],
+    });
     return payload.sub ? parseInt(payload.sub, 10) : null;
   } catch {
     return null;
@@ -57,6 +61,9 @@ export interface User {
 }
 
 export type AuthEnv = {
+  Bindings: {
+    RATE_LIMITER?: RateLimit;
+  };
   Variables: {
     user: User;
     db: UserDb;

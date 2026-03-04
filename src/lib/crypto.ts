@@ -66,7 +66,10 @@ export async function encrypt(plaintext: string): Promise<string> {
 export async function decrypt(value: string): Promise<string> {
   const match = value.match(KEY_PREFIX_RE);
   if (!match) {
-    // No key ID prefix: treat as plaintext (pre-encryption data)
+    // No key ID prefix: treat as plaintext (pre-encryption data).
+    // This should not happen in normal operation; log so we can detect
+    // and re-encrypt any legacy rows.
+    console.warn("crypto.decrypt: value has no key ID prefix, returning as plaintext");
     return value;
   }
 

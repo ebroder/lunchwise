@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { eq, desc } from "drizzle-orm";
+import type { Context } from "hono";
 import { requireAuthJson, type AuthEnv } from "../lib/auth.js";
 import { credentials, links, syncLog } from "../lib/schema-user.js";
 import { syncLink, describeError } from "../lib/sync.js";
@@ -11,6 +12,25 @@ import { createLogger } from "../lib/logger.js";
 const api = new Hono<AuthEnv>();
 
 api.use("*", requireAuthJson);
+
+api.use("*", async (c, next) => {
+  const limiter = c.env.RATE_LIMITER;
+  if (limiter) {
+    const user = c.get("user");
+    const { success } = await limiter.limit({ key: `user:${user.id}` });
+    if (!success) {
+      return c.json({ error: "Too many requests" }, 429);
+    }
+  }
+  await next();
+});
+
+function parseLinkId(c: Context, param = "id") {
+  const raw = c.req.param(param);
+  const id = parseInt(raw, 10);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return id;
+}
 
 // --- User ---
 
@@ -106,7 +126,8 @@ api.get("/links", async (c) => {
 });
 
 api.get("/links/:id", async (c) => {
-  const linkId = parseInt(c.req.param("id"), 10);
+  const linkId = parseLinkId(c);
+  if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
   const rows = await db
     .select()
@@ -131,6 +152,12 @@ api.post("/links", async (c) => {
   if (!Number.isInteger(accountId) || accountId <= 0) {
     return c.json({ error: "Invalid account ID" }, 400);
   }
+  if (body.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(body.startDate)) {
+    return c.json({ error: "startDate must be YYYY-MM-DD" }, 400);
+  }
+  if (body.splitwiseGroupId && !/^\d+$/.test(body.splitwiseGroupId)) {
+    return c.json({ error: "Invalid Splitwise group ID" }, 400);
+  }
 
   const db = c.get("db");
   const [created] = await db
@@ -148,7 +175,8 @@ api.post("/links", async (c) => {
 });
 
 api.put("/links/:id", async (c) => {
-  const linkId = parseInt(c.req.param("id"), 10);
+  const linkId = parseLinkId(c);
+  if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const body = await c.req.json<{
     splitwiseGroupId?: string | null;
     lmAccountId: number;
@@ -161,8 +189,17 @@ api.put("/links/:id", async (c) => {
   if (!Number.isInteger(accountId) || accountId <= 0) {
     return c.json({ error: "Invalid account ID" }, 400);
   }
+  if (body.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(body.startDate)) {
+    return c.json({ error: "startDate must be YYYY-MM-DD" }, 400);
+  }
+  if (body.splitwiseGroupId && !/^\d+$/.test(body.splitwiseGroupId)) {
+    return c.json({ error: "Invalid Splitwise group ID" }, 400);
+  }
 
   const db = c.get("db");
+  const existing = await db.select({ id: links.id }).from(links).where(eq(links.id, linkId));
+  if (!existing[0]) return c.json({ error: "Link not found" }, 404);
+
   await db
     .update(links)
     .set({
@@ -179,8 +216,13 @@ api.put("/links/:id", async (c) => {
 });
 
 api.delete("/links/:id", async (c) => {
-  const linkId = parseInt(c.req.param("id"), 10);
+  const linkId = parseLinkId(c);
+  if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
+
+  const existing = await db.select({ id: links.id }).from(links).where(eq(links.id, linkId));
+  if (!existing[0]) return c.json({ error: "Link not found" }, 404);
+
   const client = db.$client;
   await client.batch([
     {
@@ -202,7 +244,8 @@ api.delete("/links/:id", async (c) => {
 // --- History ---
 
 api.get("/links/:id/history", async (c) => {
-  const linkId = parseInt(c.req.param("id"), 10);
+  const linkId = parseLinkId(c);
+  if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
   const logs = await db
     .select()
@@ -217,7 +260,8 @@ api.get("/links/:id/history", async (c) => {
 
 api.get("/links/:id/dry-run", async (c) => {
   const user = c.get("user");
-  const linkId = parseInt(c.req.param("id"), 10);
+  const linkId = parseLinkId(c);
+  if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
 
   const rows = await db
@@ -246,10 +290,9 @@ api.get("/links/:id/dry-run", async (c) => {
       })),
     });
   } catch (err) {
-    const message = describeError(err);
     const log = createLogger({ source: "api", endpoint: "dry-run", linkId });
-    log.error("Dry run failed", { error: message });
-    return c.json({ error: message }, 500);
+    log.error("Dry run failed", { error: describeError(err) });
+    return c.json({ error: "Dry run failed" }, 500);
   }
 });
 
@@ -257,7 +300,8 @@ api.get("/links/:id/dry-run", async (c) => {
 
 api.post("/sync/:linkId", async (c) => {
   const user = c.get("user");
-  const linkId = parseInt(c.req.param("linkId"), 10);
+  const linkId = parseLinkId(c, "linkId");
+  if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
 
   const rows = await db
@@ -277,10 +321,9 @@ api.post("/sync/:linkId", async (c) => {
       deleted: result.deleted,
     });
   } catch (err) {
-    const message = describeError(err);
     const log = createLogger({ source: "api", endpoint: "sync", linkId });
-    log.error("Sync failed", { error: message });
-    return c.json({ error: message }, 500);
+    log.error("Sync failed", { error: describeError(err) });
+    return c.json({ error: "Sync failed" }, 500);
   }
 });
 
