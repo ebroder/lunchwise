@@ -3,7 +3,7 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { createMiddleware } from "hono/factory";
 import type { Context } from "hono";
 import { eq } from "drizzle-orm";
-import { getSharedDb, getUserDb, type UserDb } from "./db.js";
+import { getSharedDb, getUserDb, initUserDb, type UserDb } from "./db.js";
 import { users } from "./schema-shared.js";
 import { credentials } from "./schema-user.js";
 import { env } from "./env.js";
@@ -74,6 +74,8 @@ export function clearSession(c: Context): void {
   deleteCookie(c, COOKIE_NAME, { path: "/" });
 }
 
+const initializedDbs = new Set<string>();
+
 async function resolveAuth(c: Context): Promise<{ user: User; db: UserDb } | null> {
   const userId = await getUserId(c);
   if (!userId) return null;
@@ -87,6 +89,10 @@ async function resolveAuth(c: Context): Promise<{ user: User; db: UserDb } | nul
   if (!row?.tursoDbUrl) return null;
 
   const userDb = getUserDb(row.tursoDbUrl);
+  if (!initializedDbs.has(row.tursoDbUrl)) {
+    await initUserDb(userDb);
+    initializedDbs.add(row.tursoDbUrl);
+  }
 
   const creds = await userDb.select().from(credentials).limit(1);
   const cred = creds[0];

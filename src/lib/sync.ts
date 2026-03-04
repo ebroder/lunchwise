@@ -1,6 +1,6 @@
 import { eq, isNotNull } from "drizzle-orm";
 import { sql } from "drizzle-orm";
-import { getSharedDb, getUserDb, type UserDb } from "./db.js";
+import { getSharedDb, getUserDb, initUserDb, type UserDb } from "./db.js";
 import { users } from "./schema-shared.js";
 import { credentials, links, syncedTransactions, syncLog } from "./schema-user.js";
 import {
@@ -665,6 +665,7 @@ export async function syncAllEnabled(): Promise<void> {
   for (const row of allUsers) {
     const userLog = log.with({ userId: row.id });
     const userDb = getUserDb(row.tursoDbUrl!);
+    await initUserDb(userDb);
 
     // Clean up stale sync_log entries from interrupted runs
     const cleaned = await userDb.run(sql`
