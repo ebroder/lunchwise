@@ -15,7 +15,8 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@libsql/client": "^0.17.0",
@@ -32,6 +33,7 @@
     "@cloudflare/workers-types": "^4.20250224.0",
     "@preact/preset-vite": "^2.10.3",
     "@tailwindcss/cli": "^4.2.1",
+    "@vitest/coverage-v8": "^4.0.18",
     "openapi-typescript": "^7.13.0",
     "oxlint": "^1.51.0",
     "tailwindcss": "^4.2.1",

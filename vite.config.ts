@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import preact from "@preact/preset-vite";
 
 export default defineConfig({
@@ -12,6 +12,13 @@ export default defineConfig({
       "/api": "http://localhost:8787",
       "/auth": "http://localhost:8787",
       "/styles.css": "http://localhost:8787",
+    },
+  },
+  test: {
+    coverage: {
+      provider: "v8",
+      include: ["src/lib/**"],
+      exclude: ["src/lib/*-api.d.ts", "src/lib/schema-*.ts"],
     },
   },
 });
