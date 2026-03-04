@@ -63,7 +63,30 @@ export function getUserDb(url: string): UserDb {
 
 // --- Schema initialization ---
 
+// Versioned migrations for existing user DBs. Each entry runs once when
+// the DB's PRAGMA user_version is below the migration's version number.
+// New tables/columns should also be added to the CREATE TABLE statements
+// below so fresh DBs get the full schema in one shot.
+const migrations: { version: number; sql: string[] }[] = [
+  {
+    version: 1,
+    sql: [
+      `ALTER TABLE links ADD COLUMN sync_balance INTEGER NOT NULL DEFAULT 0`,
+    ],
+  },
+];
+
+function isDuplicateColumnError(err: unknown): boolean {
+  let current: unknown = err;
+  while (current instanceof Error) {
+    if (current.message.includes("duplicate column")) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
 export async function initUserDb(db: UserDb): Promise<void> {
+  // Idempotent table creation (handles brand-new DBs)
   await db.run(sql`
     CREATE TABLE IF NOT EXISTS credentials (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +103,7 @@ export async function initUserDb(db: UserDb): Promise<void> {
       start_date TEXT,
       include_payments INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
+      sync_balance INTEGER NOT NULL DEFAULT 0,
       last_synced_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -119,6 +143,35 @@ export async function initUserDb(db: UserDb): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_sync_log_link_id
       ON sync_log(link_id, started_at DESC)
   `);
+
+  // Run versioned migrations for existing DBs
+  const versionResult = await db.get<{ user_version: number }>(
+    sql`PRAGMA user_version`,
+  );
+  const currentVersion = versionResult?.user_version ?? 0;
+  const latestVersion = migrations.length > 0
+    ? migrations[migrations.length - 1].version
+    : 0;
+
+  if (currentVersion < latestVersion) {
+    for (const migration of migrations) {
+      if (migration.version > currentVersion) {
+        for (const stmt of migration.sql) {
+          try {
+            await db.run(sql.raw(stmt));
+          } catch (err) {
+            // Tolerate "duplicate column" from ALTER TABLE ADD COLUMN
+            // on fresh DBs where CREATE TABLE already includes the column.
+            // Drizzle wraps the SQLite error in the cause chain.
+            if (!isDuplicateColumnError(err)) throw err;
+          }
+        }
+      }
+    }
+    await db.run(sql.raw(`PRAGMA user_version = ${latestVersion}`));
+  }
+
+  // Clean up stale sync_log entries from interrupted runs
   await db.run(sql`
     UPDATE sync_log
     SET status = 'error', finished_at = datetime('now'), error_message = 'Process interrupted'

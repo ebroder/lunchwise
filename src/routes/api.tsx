@@ -3,9 +3,11 @@ import { eq, desc } from "drizzle-orm";
 import type { Context } from "hono";
 import { requireAuthJson, type AuthEnv } from "../lib/auth.js";
 import { credentials, links, syncLog } from "../lib/schema-user.js";
-import { syncLink, describeError } from "../lib/sync.js";
-import { createSplitwiseClient } from "../lib/splitwise.js";
-import { createLunchMoneyClient, getManualAccounts } from "../lib/lunch-money.js";
+import { syncLink, syncBalances, describeError } from "../lib/sync.js";
+import { createSplitwiseClient, getGroups, getGroup, getUserBalances } from "../lib/splitwise.js";
+import { createLunchMoneyClient, getManualAccounts, getUser } from "../lib/lunch-money.js";
+import { getExchangeRates, convertCurrency } from "../lib/exchange-rates.js";
+import { getSharedDb } from "../lib/db.js";
 import { encrypt } from "../lib/crypto.js";
 import { createLogger } from "../lib/logger.js";
 
@@ -146,6 +148,7 @@ api.post("/links", async (c) => {
     lmAccountId: number;
     startDate?: string | null;
     includePayments?: boolean;
+    syncBalance?: boolean;
   }>();
 
   const accountId = body.lmAccountId;
@@ -167,6 +170,7 @@ api.post("/links", async (c) => {
       lmAccountId: accountId,
       startDate: body.startDate || null,
       includePayments: body.includePayments ? 1 : 0,
+      syncBalance: body.syncBalance ? 1 : 0,
       enabled: 0,
     })
     .returning({ id: links.id });
@@ -182,6 +186,7 @@ api.put("/links/:id", async (c) => {
     lmAccountId: number;
     startDate?: string | null;
     includePayments?: boolean;
+    syncBalance?: boolean;
     enabled?: boolean;
   }>();
 
@@ -207,6 +212,7 @@ api.put("/links/:id", async (c) => {
       lmAccountId: accountId,
       startDate: body.startDate || null,
       includePayments: body.includePayments ? 1 : 0,
+      syncBalance: body.syncBalance ? 1 : 0,
       enabled: body.enabled ? 1 : 0,
       updatedAt: new Date().toISOString(),
     })
@@ -275,6 +281,49 @@ api.get("/links/:id/dry-run", async (c) => {
 
   try {
     const result = await syncLink(db, link, user, { dryRun: true });
+
+    // Compute projected balance if balance sync is enabled
+    let balancePreview: {
+      would_sync: boolean;
+      balance: number | null;
+      currency: string | null;
+      balances_by_currency?: { currency: string; amount: number }[];
+    } = { would_sync: false, balance: null, currency: null };
+
+    if (link.syncBalance === 1 && user.lunchMoneyApiKey) {
+      try {
+        const [lmUser, rates] = await Promise.all([
+          getUser(user.lunchMoneyApiKey),
+          getExchangeRates(getSharedDb()),
+        ]);
+        const targetCurrency = lmUser.primary_currency.toUpperCase();
+
+        const groups = link.splitwiseGroupId
+          ? [await getGroup(user.splitwiseAccessToken, parseInt(link.splitwiseGroupId, 10))]
+          : await getGroups(user.splitwiseAccessToken);
+
+        const rawBalances: { currency: string; amount: number }[] = [];
+        let total = 0;
+        for (const group of groups) {
+          if (!group) continue;
+          for (const { currency, amount } of getUserBalances(group, user.splitwiseUserId)) {
+            rawBalances.push({ currency, amount });
+            total += convertCurrency(amount, currency, targetCurrency, rates);
+          }
+        }
+
+        balancePreview = {
+          would_sync: true,
+          balance: Math.round(total * 10000) / 10000,
+          currency: targetCurrency,
+          balances_by_currency: rawBalances,
+        };
+      } catch (err) {
+        const log = createLogger({ source: "api", endpoint: "dry-run", linkId });
+        log.warn("Balance preview failed", { error: describeError(err) });
+      }
+    }
+
     return c.json({
       expenses_fetched: result.expenses_fetched,
       created: result.created,
@@ -288,6 +337,7 @@ api.get("/links/:id/dry-run", async (c) => {
         currency: a.currency,
         expenseId: a.expenseId,
       })),
+      balance: balancePreview,
     });
   } catch (err) {
     const log = createLogger({ source: "api", endpoint: "dry-run", linkId });
@@ -315,6 +365,19 @@ api.post("/sync/:linkId", async (c) => {
 
   try {
     const result = await syncLink(db, link, user);
+
+    // Balance sync for this link (failures are logged but don't fail the response)
+    if (link.syncBalance === 1 && user.lunchMoneyApiKey) {
+      try {
+        const rates = await getExchangeRates(getSharedDb());
+        const balanceLog = createLogger({ source: "api", endpoint: "sync", linkId });
+        await syncBalances([link], user, rates, balanceLog);
+      } catch (err) {
+        const balanceLog = createLogger({ source: "api", endpoint: "sync", linkId });
+        balanceLog.warn("Balance sync failed during manual sync", { error: describeError(err) });
+      }
+    }
+
     return c.json({
       created: result.created,
       updated: result.updated,

@@ -8,6 +8,7 @@ interface SyncLink {
   lmAccountId: number;
   startDate: string | null;
   includePayments: number;
+  syncBalance: number;
   enabled: number;
 }
 
@@ -32,12 +33,20 @@ interface DryRunAction {
   expenseId: string;
 }
 
+interface BalancePreview {
+  would_sync: boolean;
+  balance: number | null;
+  currency: string | null;
+  balances_by_currency?: { currency: string; amount: number }[];
+}
+
 interface DryRunResult {
   expenses_fetched: number;
   created: number;
   updated: number;
   deleted: number;
   actions: DryRunAction[];
+  balance: BalancePreview;
 }
 
 const card =
@@ -84,6 +93,7 @@ export function LinkEdit({ params }: { params: { id: string } }) {
   const [accountId, setAccountId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [includePayments, setIncludePayments] = useState(false);
+  const [syncBalance, setSyncBalance] = useState(false);
   const [enabled, setEnabled] = useState(false);
 
   // Dry run state
@@ -110,6 +120,7 @@ export function LinkEdit({ params }: { params: { id: string } }) {
         setAccountId(String(l.lmAccountId));
         setStartDate(l.startDate ?? "");
         setIncludePayments(l.includePayments === 1);
+        setSyncBalance(l.syncBalance === 1);
         setEnabled(l.enabled === 1);
       })
       .catch((err) => {
@@ -139,6 +150,7 @@ export function LinkEdit({ params }: { params: { id: string } }) {
           lmAccountId: parseInt(accountId, 10),
           startDate: startDate || null,
           includePayments,
+          syncBalance,
           enabled,
         },
         "PUT",
@@ -308,6 +320,29 @@ export function LinkEdit({ params }: { params: { id: string } }) {
           </label>
         </div>
 
+        <div>
+          <div class="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="sync_balance"
+              checked={syncBalance}
+              onChange={(e) =>
+                setSyncBalance((e.target as HTMLInputElement).checked)
+              }
+              class="rounded border-stone-300 dark:border-stone-600"
+            />
+            <label
+              for="sync_balance"
+              class="text-sm text-stone-700 dark:text-stone-300"
+            >
+              Sync account balance
+            </label>
+          </div>
+          <p class="text-xs text-stone-500 dark:text-stone-400 mt-1 ml-5">
+            Overwrite the Lunch Money account balance with your Splitwise balance.
+          </p>
+        </div>
+
         <div class="flex items-center gap-2">
           <input
             type="checkbox"
@@ -409,6 +444,30 @@ export function LinkEdit({ params }: { params: { id: string } }) {
               </span>
             </div>
           </div>
+
+          {dryRunData.balance?.would_sync && (
+            <div class={`${card} p-4 mb-4`}>
+              <h3 class="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
+                Balance Sync Preview
+              </h3>
+              <p class="text-sm text-stone-600 dark:text-stone-400">
+                Would set account balance to{" "}
+                <span class="font-medium text-stone-900 dark:text-stone-100">
+                  {dryRunData.balance.currency}{" "}
+                  {dryRunData.balance.balance?.toFixed(4)}
+                </span>
+              </p>
+              {dryRunData.balance.balances_by_currency &&
+                dryRunData.balance.balances_by_currency.length > 1 && (
+                <p class="text-xs text-stone-500 dark:text-stone-400 mt-1">
+                  Converted from:{" "}
+                  {dryRunData.balance.balances_by_currency
+                    .map((b) => `${b.currency} ${b.amount.toFixed(2)}`)
+                    .join(", ")}
+                </p>
+              )}
+            </div>
+          )}
 
           {dryRunData.actions.length === 0 ? (
             <p class="text-sm text-stone-500 dark:text-stone-400">

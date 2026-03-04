@@ -3,6 +3,7 @@ import type { paths, components } from "./splitwise-api.js";
 
 export type SplitwiseExpense = components["schemas"]["expense"];
 export type SplitwiseShare = components["schemas"]["share"];
+export type SplitwiseGroup = components["schemas"]["group"];
 
 export function createSplitwiseClient(accessToken: string) {
   return createClient<paths>({
@@ -50,6 +51,61 @@ export async function getAllExpenses(
   }
 
   return allExpenses;
+}
+
+export async function getGroups(
+  accessToken: string,
+): Promise<SplitwiseGroup[]> {
+  const client = createSplitwiseClient(accessToken);
+  const { data, error } = await client.GET("/get_groups");
+
+  if (error) {
+    throw new Error(`Splitwise API error: ${JSON.stringify(error)}`);
+  }
+
+  return data?.groups ?? [];
+}
+
+export async function getGroup(
+  accessToken: string,
+  groupId: number,
+): Promise<SplitwiseGroup | null> {
+  const client = createSplitwiseClient(accessToken);
+  const { data, error } = await client.GET("/get_group/{id}", {
+    params: { path: { id: groupId } },
+  });
+
+  if (error) {
+    throw new Error(`Splitwise API error: ${JSON.stringify(error)}`);
+  }
+
+  return data?.group ?? null;
+}
+
+export interface CurrencyBalance {
+  currency: string;
+  amount: number;
+}
+
+// Extract the current user's balances from a group's member list.
+// Returns one entry per currency the user has a non-zero balance in.
+export function getUserBalances(
+  group: SplitwiseGroup,
+  splitwiseUserId: string,
+): CurrencyBalance[] {
+  const member = group.members?.find(
+    (m) => String(m.id) === splitwiseUserId,
+  );
+  if (!member?.balance) return [];
+
+  const balances: CurrencyBalance[] = [];
+  for (const b of member.balance) {
+    if (!b.currency_code || !b.amount) continue;
+    const amount = parseFloat(b.amount);
+    if (amount === 0) continue;
+    balances.push({ currency: b.currency_code, amount });
+  }
+  return balances;
 }
 
 export function getUserShare(

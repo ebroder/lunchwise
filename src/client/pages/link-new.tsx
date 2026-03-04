@@ -34,6 +34,7 @@ export function LinkNew() {
   const [accountId, setAccountId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [includePayments, setIncludePayments] = useState(false);
+  const [syncBalance, setSyncBalance] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -62,6 +63,7 @@ export function LinkNew() {
         lmAccountId: parseInt(accountId, 10),
         startDate: startDate || null,
         includePayments,
+        syncBalance,
       });
       navigate(`/dashboard/links/${result.id}`);
     } catch (err) {
@@ -163,6 +165,29 @@ export function LinkNew() {
             >
               Include Splitwise payments (settlements between users)
             </label>
+          </div>
+
+          <div>
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="sync_balance"
+                checked={syncBalance}
+                onChange={(e) =>
+                  setSyncBalance((e.target as HTMLInputElement).checked)
+                }
+                class="rounded border-stone-300 dark:border-stone-600"
+              />
+              <label
+                for="sync_balance"
+                class="text-sm text-stone-700 dark:text-stone-300"
+              >
+                Sync account balance
+              </label>
+            </div>
+            <p class="text-xs text-stone-500 dark:text-stone-400 mt-1 ml-5">
+              Overwrite the Lunch Money account balance with your Splitwise balance.
+            </p>
           </div>
 
           <button type="submit" disabled={saving} class={btn}>

@@ -18,6 +18,7 @@ export const links = sqliteTable("links", {
   startDate: text("start_date"),
   includePayments: integer("include_payments").notNull().default(0),
   enabled: integer("enabled").notNull().default(1),
+  syncBalance: integer("sync_balance").notNull().default(0),
   lastSyncedAt: text("last_synced_at"),
   createdAt: timestamp("created_at"),
   updatedAt: timestamp("updated_at"),

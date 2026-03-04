@@ -5,6 +5,7 @@ export type LmTransaction = components["schemas"]["transactionObject"];
 export type LmManualAccount = components["schemas"]["manualAccountObject"];
 export type LmInsertTransaction =
   components["schemas"]["insertTransactionObject"];
+export type LmUser = components["schemas"]["userObject"];
 
 export function createLunchMoneyClient(apiKey: string) {
   return createClient<paths>({
@@ -118,4 +119,36 @@ export async function getManualAccounts(
   }
 
   return data.manual_accounts ?? [];
+}
+
+export async function getUser(apiKey: string): Promise<LmUser> {
+  const client = createLunchMoneyClient(apiKey);
+  const { data, error } = await client.GET("/me");
+
+  if (error) {
+    throw new Error(`Lunch Money API error: ${JSON.stringify(error)}`);
+  }
+
+  return data;
+}
+
+export async function updateAccountBalance(
+  apiKey: string,
+  accountId: number,
+  balance: number,
+): Promise<void> {
+  const client = createLunchMoneyClient(apiKey);
+  const { error } = await client.PUT("/manual_accounts/{id}", {
+    params: { path: { id: accountId } },
+    body: {
+      balance,
+      balance_as_of: new Date().toISOString(),
+    },
+  });
+
+  if (error) {
+    throw new Error(
+      `Lunch Money update balance error: ${JSON.stringify(error)}`,
+    );
+  }
 }

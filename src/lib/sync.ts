@@ -6,14 +6,24 @@ import { credentials, links, syncedTransactions, syncLog } from "./schema-user.j
 import {
   getAllExpenses,
   getUserShare,
+  getGroups,
+  getGroup,
+  getUserBalances,
   type SplitwiseExpense,
 } from "./splitwise.js";
 import {
   insertTransactions,
   updateTransactions,
   getTransactions,
+  getUser,
+  updateAccountBalance,
   type LmInsertTransaction,
 } from "./lunch-money.js";
+import {
+  getExchangeRates,
+  convertCurrency,
+  type ExchangeRates,
+} from "./exchange-rates.js";
 import type { User } from "./auth.js";
 import { decrypt } from "./crypto.js";
 import { createLogger } from "./logger.js";
@@ -549,6 +559,82 @@ export async function syncLink(
   return result;
 }
 
+// Sync Splitwise balances to Lunch Money account balances.
+// Groups balance-enabled links by LM account and sums balances across
+// all linked Splitwise groups, converting currencies as needed.
+export async function syncBalances(
+  enabledLinks: Link[],
+  user: User,
+  rates: ExchangeRates,
+  log: ReturnType<typeof createLogger>,
+): Promise<void> {
+  const balanceLinks = enabledLinks.filter((l) => l.syncBalance === 1);
+  if (balanceLinks.length === 0) return;
+
+  const apiKey = user.lunchMoneyApiKey;
+  if (!apiKey) return;
+
+  const lmUser = await getUser(apiKey);
+  const targetCurrency = lmUser.primary_currency.toUpperCase();
+
+  // Group links by LM account
+  const byAccount = new Map<number, Link[]>();
+  for (const link of balanceLinks) {
+    const existing = byAccount.get(link.lmAccountId) ?? [];
+    existing.push(link);
+    byAccount.set(link.lmAccountId, existing);
+  }
+
+  for (const [accountId, accountLinks] of byAccount) {
+    try {
+      let totalBalance = 0;
+
+      // Deduplicate groups across links targeting the same LM account
+      // (e.g. an "all groups" link + a specific-group link would double-count)
+      const seenGroupIds = new Set<number>();
+
+      for (const link of accountLinks) {
+        const groups = link.splitwiseGroupId
+          ? [await getGroup(user.splitwiseAccessToken, parseInt(link.splitwiseGroupId, 10))]
+          : await getGroups(user.splitwiseAccessToken);
+
+        for (const group of groups) {
+          if (!group) continue;
+          const gid = group.id ?? -1;
+          if (seenGroupIds.has(gid)) continue;
+          seenGroupIds.add(gid);
+
+          const balances = getUserBalances(group, user.splitwiseUserId);
+          for (const { currency, amount } of balances) {
+            const converted = convertCurrency(
+              amount,
+              currency,
+              targetCurrency,
+              rates,
+            );
+            totalBalance += converted;
+          }
+        }
+      }
+
+      // Round to 4 decimal places (LM precision limit)
+      totalBalance = Math.round(totalBalance * 10000) / 10000;
+
+      await updateAccountBalance(apiKey, accountId, totalBalance);
+      log.info("Balance synced", {
+        accountId,
+        balance: totalBalance,
+        currency: targetCurrency,
+      });
+    } catch (err) {
+      log.error("Balance sync failed for account", {
+        accountId,
+        error: describeError(err),
+      });
+    }
+  }
+}
+
 export async function syncAllEnabled(): Promise<void> {
   const log = createLogger({ source: "cron" });
   const cronStart = Date.now();
@@ -560,6 +646,17 @@ export async function syncAllEnabled(): Promise<void> {
     .where(isNotNull(users.tursoDbUrl));
 
   log.info("Cron started", { users: allUsers.length });
+
+  // Fetch exchange rates once for all balance syncs this run (cached in shared DB)
+  let exchangeRates: ExchangeRates | null = null;
+  try {
+    exchangeRates = await getExchangeRates(shared);
+    log.info("Exchange rates loaded", { currencies: Object.keys(exchangeRates).length });
+  } catch (err) {
+    log.warn("Failed to load exchange rates, skipping balance sync", {
+      error: describeError(err),
+    });
+  }
 
   let totalLinks = 0;
   let successes = 0;
@@ -612,6 +709,15 @@ export async function syncAllEnabled(): Promise<void> {
       }
 
       await new Promise((r) => setTimeout(r, 500));
+    }
+
+    // Balance sync (after all transaction syncs for this user)
+    if (exchangeRates) {
+      try {
+        await syncBalances(enabledLinks, user, exchangeRates, userLog);
+      } catch (err) {
+        userLog.error("Balance sync failed", { error: describeError(err) });
+      }
     }
   }
 

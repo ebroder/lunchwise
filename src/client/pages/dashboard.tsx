@@ -6,6 +6,7 @@ interface SyncLink {
   id: number;
   splitwiseGroupId: string | null;
   lmAccountId: number;
+  syncBalance: number;
   enabled: number;
   lastSyncedAt: string | null;
   createdAt: string;
@@ -236,6 +237,11 @@ export function Dashboard() {
                         {!link.enabled && (
                           <span class="ml-2 text-amber-600 dark:text-amber-400">
                             (disabled)
+                          </span>
+                        )}
+                        {!!link.syncBalance && (
+                          <span class="ml-2 text-stone-400 dark:text-stone-500">
+                            (balance sync)
                           </span>
                         )}
                       </div>
