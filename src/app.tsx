@@ -5,6 +5,7 @@ import { landing } from "./routes/landing.js";
 import { auth } from "./routes/auth.js";
 import { dashboard } from "./routes/dashboard.js";
 import { api } from "./routes/api.js";
+import { legal } from "./routes/legal.js";
 
 import "./types.js";
 
@@ -24,5 +25,6 @@ app.route("/", landing);
 app.route("/auth", auth);
 app.route("/dashboard", dashboard);
 app.route("/api", api);
+app.route("/", legal);
 
 export { app };

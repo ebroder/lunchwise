@@ -149,8 +149,11 @@ landing.get("/", async (c) => {
 
       {/* Footer */}
       <footer class="border-t border-stone-200 dark:border-stone-800 py-8 px-6">
-        <div class="max-w-5xl mx-auto text-center text-sm text-stone-400 dark:text-stone-600">
-          Lunchwise
+        <div class="max-w-5xl mx-auto flex items-center justify-center gap-4 text-sm text-stone-400 dark:text-stone-600">
+          <span>Lunchwise</span>
+          <span>&middot;</span>
+          <a href="/privacy" class="hover:text-stone-600 dark:hover:text-stone-400 transition-colors">Privacy</a>
+          <a href="/terms" class="hover:text-stone-600 dark:hover:text-stone-400 transition-colors">Terms</a>
         </div>
       </footer>
     </>,
