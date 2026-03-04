@@ -25,9 +25,7 @@ export function LinkHistory({ params }: { params: { id: string } }) {
     api<LogEntry[]>(`/api/links/${linkId}/history`)
       .then(setLogs)
       .catch((err) => {
-        setError(
-          err instanceof ApiError ? err.message : "Failed to load history",
-        );
+        setError(err instanceof ApiError ? err.message : "Failed to load history");
       })
       .finally(() => setLoading(false));
   }, [linkId]);
@@ -45,18 +43,12 @@ export function LinkHistory({ params }: { params: { id: string } }) {
 
       <h1 class="text-2xl font-bold mb-6">Sync History</h1>
 
-      {error && (
-        <div class={alertError}>
-          {error}
-        </div>
-      )}
+      {error && <div class={alertError}>{error}</div>}
 
       {loading ? (
         <p class="text-sm text-stone-500 dark:text-stone-400">Loading...</p>
       ) : logs.length === 0 ? (
-        <p class="text-sm text-stone-500 dark:text-stone-400">
-          No sync runs yet.
-        </p>
+        <p class="text-sm text-stone-500 dark:text-stone-400">No sync runs yet.</p>
       ) : (
         <div class={`${card} overflow-hidden`}>
           <table class="w-full text-sm">
@@ -85,9 +77,7 @@ export function LinkHistory({ params }: { params: { id: string } }) {
             <tbody class="divide-y divide-stone-100 dark:divide-stone-800">
               {logs.map((log) => (
                 <tr key={log.id}>
-                  <td class="px-4 py-2 text-stone-700 dark:text-stone-300">
-                    {log.startedAt}
-                  </td>
+                  <td class="px-4 py-2 text-stone-700 dark:text-stone-300">{log.startedAt}</td>
                   <td class="px-4 py-2">
                     <span
                       class={

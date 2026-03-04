@@ -42,8 +42,8 @@ landing.get("/", async (c) => {
             class="animate-fade-up text-lg text-stone-500 dark:text-stone-400 mt-8 max-w-lg mx-auto leading-relaxed"
             style="animation-delay: 0.2s"
           >
-            Lunchwise syncs your Splitwise expenses into Lunch Money
-            automatically. No more manual entry, no missed transactions.
+            Lunchwise syncs your Splitwise expenses into Lunch Money automatically. No more manual
+            entry, no missed transactions.
           </p>
           <div class="animate-fade-up mt-12" style="animation-delay: 0.3s">
             <a
@@ -65,33 +65,27 @@ landing.get("/", async (c) => {
       <section class="py-20 px-6">
         <div class="max-w-4xl mx-auto grid md:grid-cols-3 gap-12 md:gap-16">
           <div>
-            <div class="font-serif text-2xl text-amber-700/70 dark:text-amber-500/70 mb-3">
-              01
-            </div>
+            <div class="font-serif text-2xl text-amber-700/70 dark:text-amber-500/70 mb-3">01</div>
             <h3 class="font-semibold mb-2">Automatic sync</h3>
             <p class="text-sm text-stone-500 dark:text-stone-400 leading-relaxed">
-              New Splitwise expenses appear in Lunch Money within hours.
-              Amounts and descriptions all carry over.
+              New Splitwise expenses appear in Lunch Money within hours. Amounts and descriptions
+              all carry over.
             </p>
           </div>
           <div>
-            <div class="font-serif text-2xl text-amber-700/70 dark:text-amber-500/70 mb-3">
-              02
-            </div>
+            <div class="font-serif text-2xl text-amber-700/70 dark:text-amber-500/70 mb-3">02</div>
             <h3 class="font-semibold mb-2">Preview first</h3>
             <p class="text-sm text-stone-500 dark:text-stone-400 leading-relaxed">
-              Dry run any sync to see exactly what will be created, updated, or
-              removed before it touches your data.
+              Dry run any sync to see exactly what will be created, updated, or removed before it
+              touches your data.
             </p>
           </div>
           <div>
-            <div class="font-serif text-2xl text-amber-700/70 dark:text-amber-500/70 mb-3">
-              03
-            </div>
+            <div class="font-serif text-2xl text-amber-700/70 dark:text-amber-500/70 mb-3">03</div>
             <h3 class="font-semibold mb-2">Isolated by design</h3>
             <p class="text-sm text-stone-500 dark:text-stone-400 leading-relaxed">
-              Your credentials live in a dedicated database. No shared tables,
-              no cross-user queries.
+              Your credentials live in a dedicated database. No shared tables, no cross-user
+              queries.
             </p>
           </div>
         </div>
@@ -135,8 +129,7 @@ landing.get("/", async (c) => {
         <div class="max-w-2xl mx-auto text-center">
           <h2 class="font-serif text-3xl mb-4">Ready to connect?</h2>
           <p class="text-stone-500 dark:text-stone-400 mb-10">
-            Link your Splitwise account to get started. You'll add your Lunch
-            Money API key after.
+            Link your Splitwise account to get started. You'll add your Lunch Money API key after.
           </p>
           <a
             href="/auth/splitwise"
@@ -152,8 +145,15 @@ landing.get("/", async (c) => {
         <div class="max-w-5xl mx-auto flex items-center justify-center gap-4 text-sm text-stone-400 dark:text-stone-600">
           <span>Lunchwise</span>
           <span>&middot;</span>
-          <a href="/privacy" class="hover:text-stone-600 dark:hover:text-stone-400 transition-colors">Privacy</a>
-          <a href="/terms" class="hover:text-stone-600 dark:hover:text-stone-400 transition-colors">Terms</a>
+          <a
+            href="/privacy"
+            class="hover:text-stone-600 dark:hover:text-stone-400 transition-colors"
+          >
+            Privacy
+          </a>
+          <a href="/terms" class="hover:text-stone-600 dark:hover:text-stone-400 transition-colors">
+            Terms
+          </a>
         </div>
       </footer>
     </>,

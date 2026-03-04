@@ -1,8 +1,7 @@
 import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
-const timestamp = (name: string) =>
-  text(name).notNull().default(sql`(datetime('now'))`);
+const timestamp = (name: string) => text(name).notNull().default(sql`(datetime('now'))`);
 
 export const credentials = sqliteTable("credentials", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -38,12 +37,7 @@ export const syncedTransactions = sqliteTable(
     createdAt: timestamp("created_at"),
     updatedAt: timestamp("updated_at"),
   },
-  (table) => [
-    uniqueIndex("idx_synced_link_expense").on(
-      table.linkId,
-      table.splitwiseExpenseId,
-    ),
-  ],
+  (table) => [uniqueIndex("idx_synced_link_expense").on(table.linkId, table.splitwiseExpenseId)],
 );
 
 export const syncLog = sqliteTable("sync_log", {

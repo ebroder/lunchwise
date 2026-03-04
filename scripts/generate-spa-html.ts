@@ -9,5 +9,6 @@ writeFileSync(
 );
 
 // Remove index.html from the assets directory so Cloudflare's asset binding
-// doesn't serve it at "/", which would bypass the Worker's landing page route.
+// doesn't serve it at "/". Without this, the SPA shell would be served
+// unauthenticated at the root, bypassing the Worker's auth-gated dashboard route.
 unlinkSync("dist/client/index.html");

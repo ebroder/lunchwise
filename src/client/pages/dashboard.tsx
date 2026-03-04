@@ -1,13 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { Link } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
-import {
-  Button,
-  card,
-  inputClass,
-  alertSuccess,
-  alertError,
-} from "../components/ui.js";
+import { Button, card, inputClass, alertSuccess, alertError } from "../components/ui.js";
 
 interface SyncLink {
   id: number;
@@ -32,9 +26,9 @@ export function Dashboard() {
   const [syncingId, setSyncingId] = useState<number | null>(null);
 
   useEffect(() => {
-    api<{ hasLunchMoney: boolean }>("/api/me").then((data) =>
-      setLmConnected(data.hasLunchMoney),
-    );
+    api<{ hasLunchMoney: boolean }>("/api/me")
+      .then((data) => setLmConnected(data.hasLunchMoney))
+      .catch(() => setLmConnected(false));
     api<SyncLink[]>("/api/links")
       .then(setLinks)
       .finally(() => setLoading(false));
@@ -51,8 +45,7 @@ export function Dashboard() {
     } catch (err) {
       setAlert({
         type: "error",
-        message:
-          err instanceof ApiError ? err.message : "Failed to save API key",
+        message: err instanceof ApiError ? err.message : "Failed to save API key",
       });
     } finally {
       setSavingKey(false);
@@ -67,10 +60,7 @@ export function Dashboard() {
     } catch (err) {
       setAlert({
         type: "error",
-        message:
-          err instanceof ApiError
-            ? err.message
-            : "Failed to disconnect",
+        message: err instanceof ApiError ? err.message : "Failed to disconnect",
       });
     }
   }
@@ -94,8 +84,7 @@ export function Dashboard() {
     } catch (err) {
       setAlert({
         type: "error",
-        message:
-          err instanceof ApiError ? err.message : "Sync failed",
+        message: err instanceof ApiError ? err.message : "Sync failed",
       });
     } finally {
       setSyncingId(null);
@@ -107,9 +96,7 @@ export function Dashboard() {
       <h1 class="text-2xl font-bold mb-8">Dashboard</h1>
 
       {alert && (
-        <div class={alert.type === "success" ? alertSuccess : alertError}>
-          {alert.message}
-        </div>
+        <div class={alert.type === "success" ? alertSuccess : alertError}>{alert.message}</div>
       )}
 
       <div class="space-y-6">
@@ -119,16 +106,12 @@ export function Dashboard() {
           <div class="space-y-3">
             <div class="flex items-center justify-between">
               <span>Splitwise</span>
-              <span class="text-sm text-green-600 dark:text-green-400 font-medium">
-                Connected
-              </span>
+              <span class="text-sm text-green-600 dark:text-green-400 font-medium">Connected</span>
             </div>
             <div class="flex items-center justify-between">
               <span>Lunch Money</span>
               {lmConnected === null ? (
-                <span class="text-sm text-stone-400 dark:text-stone-500">
-                  Checking...
-                </span>
+                <span class="text-sm text-stone-400 dark:text-stone-500">Checking...</span>
               ) : lmConnected ? (
                 <div class="flex items-center gap-3">
                   <span class="text-sm text-green-600 dark:text-green-400 font-medium">
@@ -202,36 +185,23 @@ export function Dashboard() {
             </div>
 
             {loading ? (
-              <p class="text-sm text-stone-500 dark:text-stone-400">
-                Loading...
-              </p>
+              <p class="text-sm text-stone-500 dark:text-stone-400">Loading...</p>
             ) : links.length === 0 ? (
-              <p class="text-sm text-stone-500 dark:text-stone-400">
-                No links configured yet.
-              </p>
+              <p class="text-sm text-stone-500 dark:text-stone-400">No links configured yet.</p>
             ) : (
               <div class="divide-y divide-stone-100 dark:divide-stone-800">
                 {links.map((link) => (
-                  <div
-                    key={link.id}
-                    class="py-3 flex items-center justify-between"
-                  >
+                  <div key={link.id} class="py-3 flex items-center justify-between">
                     <div>
                       <div class="text-sm font-medium">
-                        {link.splitwiseGroupId
-                          ? `Group #${link.splitwiseGroupId}`
-                          : "All groups"}
+                        {link.splitwiseGroupId ? `Group #${link.splitwiseGroupId}` : "All groups"}
                         {" \u2192 "}
                         Account #{link.lmAccountId}
                       </div>
                       <div class="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
-                        {link.lastSyncedAt
-                          ? `Last synced: ${link.lastSyncedAt}`
-                          : "Never synced"}
+                        {link.lastSyncedAt ? `Last synced: ${link.lastSyncedAt}` : "Never synced"}
                         {!link.enabled && (
-                          <span class="ml-2 text-amber-600 dark:text-amber-400">
-                            (disabled)
-                          </span>
+                          <span class="ml-2 text-amber-600 dark:text-amber-400">(disabled)</span>
                         )}
                         {!!link.syncBalance && (
                           <span class="ml-2 text-stone-400 dark:text-stone-500">

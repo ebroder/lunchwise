@@ -15,15 +15,11 @@ const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 function getSecret(): Uint8Array {
   const secret = env.SESSION_SECRET;
   if (!secret) throw new Error("SESSION_SECRET is required");
-  if (secret.length < 32)
-    throw new Error("SESSION_SECRET must be at least 32 characters");
+  if (secret.length < 32) throw new Error("SESSION_SECRET must be at least 32 characters");
   return new TextEncoder().encode(secret);
 }
 
-export async function createSession(
-  c: Context,
-  userId: number,
-): Promise<void> {
+export async function createSession(c: Context, userId: number): Promise<void> {
   const token = await new SignJWT({ sub: String(userId) })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -74,6 +70,9 @@ export function clearSession(c: Context): void {
   deleteCookie(c, COOKIE_NAME, { path: "/" });
 }
 
+// Tracks which per-user DBs have had initUserDb() run in this isolate.
+// Workers isolates are short-lived (minutes to hours), so unbounded growth
+// is not a concern. The set resets when the isolate is recycled.
 const initializedDbs = new Set<string>();
 
 async function resolveAuth(c: Context): Promise<{ user: User; db: UserDb } | null> {
@@ -81,10 +80,7 @@ async function resolveAuth(c: Context): Promise<{ user: User; db: UserDb } | nul
   if (!userId) return null;
 
   const shared = getSharedDb();
-  const rows = await shared
-    .select()
-    .from(users)
-    .where(eq(users.id, userId));
+  const rows = await shared.select().from(users).where(eq(users.id, userId));
   const row = rows[0];
   if (!row?.tursoDbUrl) return null;
 
@@ -104,9 +100,7 @@ async function resolveAuth(c: Context): Promise<{ user: User; db: UserDb } | nul
       splitwiseUserId: row.splitwiseUserId,
       tursoDbUrl: row.tursoDbUrl,
       splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
-      lunchMoneyApiKey: cred.lunchMoneyApiKey
-        ? await decrypt(cred.lunchMoneyApiKey)
-        : null,
+      lunchMoneyApiKey: cred.lunchMoneyApiKey ? await decrypt(cred.lunchMoneyApiKey) : null,
     },
     db: userDb,
   };

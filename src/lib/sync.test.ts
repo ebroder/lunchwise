@@ -5,7 +5,8 @@ import * as userSchema from "./schema-user.js";
 import { syncedTransactions } from "./schema-user.js";
 import { initUserDb, type UserDb } from "./db.js";
 import { syncLink } from "./sync.js";
-import { getUserShare, type SplitwiseExpense } from "./splitwise.js";
+import { getUserShare, getAllExpenses, type SplitwiseExpense } from "./splitwise.js";
+import { getTransactions } from "./lunch-money.js";
 import type { User } from "./auth.js";
 
 vi.mock("./splitwise.js", async (importOriginal) => {
@@ -18,9 +19,6 @@ vi.mock("./lunch-money.js", async (importOriginal) => {
   return { ...mod, getTransactions: vi.fn().mockResolvedValue([]) };
 });
 
-import { getAllExpenses } from "./splitwise.js";
-import { getTransactions } from "./lunch-money.js";
-
 const mockGetAllExpenses = getAllExpenses as Mock;
 const mockGetTransactions = getTransactions as Mock;
 
@@ -31,9 +29,7 @@ function createTestDb(): UserDb {
   return drizzle({ client, schema: userSchema }) as UserDb;
 }
 
-function makeExpense(
-  overrides: Partial<SplitwiseExpense> = {},
-): SplitwiseExpense {
+function makeExpense(overrides: Partial<SplitwiseExpense> = {}): SplitwiseExpense {
   return {
     id: 1,
     description: "Test expense",
@@ -230,9 +226,7 @@ describe("syncLink dry run", () => {
 
   it("skips expenses before start_date", async () => {
     const link = await insertLink({ startDate: "2024-07-01" });
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, date: "2024-06-15T00:00:00Z" }),
-    ]);
+    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001, date: "2024-06-15T00:00:00Z" })]);
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -241,9 +235,7 @@ describe("syncLink dry run", () => {
 
   it("skips payments when includePayments is off", async () => {
     const link = await insertLink({ includePayments: 0 });
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, payment: true }),
-    ]);
+    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001, payment: true })]);
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -284,9 +276,7 @@ describe("syncLink dry run", () => {
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
-    expect(result.actions![0].splitwiseUpdatedAt).toBe(
-      "2024-06-15T12:00:00Z",
-    );
+    expect(result.actions![0].splitwiseUpdatedAt).toBe("2024-06-15T12:00:00Z");
   });
 
   it("includes category in notes", async () => {
@@ -372,9 +362,7 @@ describe("syncLink dry run", () => {
   describe("backfill on first sync", () => {
     it("does not re-create expenses that already exist in LM", async () => {
       const link = await insertLink({ lastSyncedAt: null });
-      mockGetTransactions.mockResolvedValue([
-        { id: 5000, external_id: "1001" },
-      ]);
+      mockGetTransactions.mockResolvedValue([{ id: 5000, external_id: "1001" }]);
       mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
 
       const result = await syncLink(db, link, defaultUser, { dryRun: true });
@@ -387,9 +375,7 @@ describe("syncLink dry run", () => {
 
     it("ignores LM transactions with non-numeric external_id", async () => {
       const link = await insertLink({ lastSyncedAt: null });
-      mockGetTransactions.mockResolvedValue([
-        { id: 5000, external_id: "not-a-number" },
-      ]);
+      mockGetTransactions.mockResolvedValue([{ id: 5000, external_id: "not-a-number" }]);
       mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
 
       const result = await syncLink(db, link, defaultUser, { dryRun: true });

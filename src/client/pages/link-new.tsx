@@ -1,13 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { useLocation, Link } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
-import {
-  Button,
-  card,
-  inputClass,
-  labelClass,
-  alertError,
-} from "../components/ui.js";
+import { Button, card, inputClass, labelClass, alertError } from "../components/ui.js";
 
 interface Group {
   id: number;
@@ -45,9 +39,7 @@ export function LinkNew() {
         setAccounts(a);
       })
       .catch((err) => {
-        setError(
-          err instanceof ApiError ? err.message : "Failed to load form data",
-        );
+        setError(err instanceof ApiError ? err.message : "Failed to load form data");
       })
       .finally(() => setLoading(false));
   }, []);
@@ -66,9 +58,7 @@ export function LinkNew() {
       });
       navigate(`/dashboard/links/${result.id}`);
     } catch (err) {
-      setError(
-        err instanceof ApiError ? err.message : "Failed to create link",
-      );
+      setError(err instanceof ApiError ? err.message : "Failed to create link");
       setSaving(false);
     }
   }
@@ -86,11 +76,7 @@ export function LinkNew() {
 
       <h1 class="text-2xl font-bold mb-6">New Sync Link</h1>
 
-      {error && (
-        <div class={alertError}>
-          {error}
-        </div>
-      )}
+      {error && <div class={alertError}>{error}</div>}
 
       {loading ? (
         <p class="text-sm text-stone-500 dark:text-stone-400">Loading...</p>
@@ -101,9 +87,7 @@ export function LinkNew() {
             <select
               class={inputClass}
               value={groupId}
-              onChange={(e) =>
-                setGroupId((e.target as HTMLSelectElement).value)
-              }
+              onChange={(e) => setGroupId((e.target as HTMLSelectElement).value)}
             >
               <option value="">All groups</option>
               {groups.map((g) => (
@@ -120,9 +104,7 @@ export function LinkNew() {
               class={inputClass}
               required
               value={accountId}
-              onChange={(e) =>
-                setAccountId((e.target as HTMLSelectElement).value)
-              }
+              onChange={(e) => setAccountId((e.target as HTMLSelectElement).value)}
             >
               <option value="">Select an account...</option>
               {accounts.map((a) => (
@@ -139,9 +121,7 @@ export function LinkNew() {
               type="date"
               class={inputClass}
               value={startDate}
-              onInput={(e) =>
-                setStartDate((e.target as HTMLInputElement).value)
-              }
+              onInput={(e) => setStartDate((e.target as HTMLInputElement).value)}
             />
             <p class="text-xs text-stone-500 dark:text-stone-400 mt-1">
               Only sync expenses on or after this date. Leave blank to sync all.
@@ -153,15 +133,10 @@ export function LinkNew() {
               type="checkbox"
               id="include_payments"
               checked={includePayments}
-              onChange={(e) =>
-                setIncludePayments((e.target as HTMLInputElement).checked)
-              }
+              onChange={(e) => setIncludePayments((e.target as HTMLInputElement).checked)}
               class="rounded border-stone-300 dark:border-stone-600"
             />
-            <label
-              for="include_payments"
-              class="text-sm text-stone-700 dark:text-stone-300"
-            >
+            <label for="include_payments" class="text-sm text-stone-700 dark:text-stone-300">
               Include Splitwise payments (settlements between users)
             </label>
           </div>
@@ -172,15 +147,10 @@ export function LinkNew() {
                 type="checkbox"
                 id="sync_balance"
                 checked={syncBalance}
-                onChange={(e) =>
-                  setSyncBalance((e.target as HTMLInputElement).checked)
-                }
+                onChange={(e) => setSyncBalance((e.target as HTMLInputElement).checked)}
                 class="rounded border-stone-300 dark:border-stone-600"
               />
-              <label
-                for="sync_balance"
-                class="text-sm text-stone-700 dark:text-stone-300"
-              >
+              <label for="sync_balance" class="text-sm text-stone-700 dark:text-stone-300">
                 Sync account balance
               </label>
             </div>

@@ -1,5 +1,4 @@
-import { eq, isNotNull } from "drizzle-orm";
-import { sql } from "drizzle-orm";
+import { eq, isNotNull, sql } from "drizzle-orm";
 import { getSharedDb, getUserDb, initUserDb, type UserDb } from "./db.js";
 import { users } from "./schema-shared.js";
 import { credentials, links, syncedTransactions, syncLog } from "./schema-user.js";
@@ -19,11 +18,7 @@ import {
   updateAccountBalance,
   type LmInsertTransaction,
 } from "./lunch-money.js";
-import {
-  getExchangeRates,
-  convertCurrency,
-  type ExchangeRates,
-} from "./exchange-rates.js";
+import { getExchangeRates, convertCurrency, type ExchangeRates } from "./exchange-rates.js";
 import type { User } from "./auth.js";
 import { decrypt } from "./crypto.js";
 import { createLogger } from "./logger.js";
@@ -196,13 +191,10 @@ async function planSync(
 
   const { tracked, backfilledAmounts } = await buildTrackedMap(db, link, apiKey, dryRun, log);
 
-  const updatedAfter =
-    link.lastSyncedAt ?? link.startDate ?? "2000-01-01T00:00:00Z";
+  const updatedAfter = link.lastSyncedAt ?? link.startDate ?? "2000-01-01T00:00:00Z";
 
   const expenses = await getAllExpenses(user.splitwiseAccessToken, {
-    group_id: link.splitwiseGroupId
-      ? parseInt(link.splitwiseGroupId, 10)
-      : undefined,
+    group_id: link.splitwiseGroupId ? parseInt(link.splitwiseGroupId, 10) : undefined,
     updated_after: updatedAfter,
   });
 
@@ -242,7 +234,9 @@ async function planSync(
             date: (expense.date ?? "").split("T")[0],
             amount: 0,
             payee: `[DELETED] ${expense.description}`,
-            currency: (expense.currency_code ?? "USD").toLowerCase() as LmInsertTransaction["currency"],
+            currency: (
+              expense.currency_code ?? "USD"
+            ).toLowerCase() as LmInsertTransaction["currency"],
             manual_account_id: link.lmAccountId,
             external_id: eid,
             notes: "",
@@ -309,7 +303,9 @@ async function planSync(
           });
         } else {
           log.debug("Plan update (backfill drift)", {
-            expenseId: eid, lmAmount, swAmount: amount,
+            expenseId: eid,
+            lmAmount,
+            swAmount: amount,
           });
           actions.push({
             type: "update",
@@ -388,9 +384,7 @@ async function executeActions(
     for (const action of creates) {
       const lmId = byExtId.get(action.expenseId);
       if (!lmId) {
-        throw new Error(
-          `Lunch Money returned no transaction for expense ${action.expenseId}`,
-        );
+        throw new Error(`Lunch Money returned no transaction for expense ${action.expenseId}`);
       }
       dbStmts.push({
         sql: "INSERT INTO synced_transactions (link_id, splitwise_expense_id, lm_transaction_id, splitwise_updated_at) VALUES (?, ?, ?, ?)",
@@ -606,12 +600,7 @@ export async function syncBalances(
 
           const balances = getUserBalances(group, user.splitwiseUserId);
           for (const { currency, amount } of balances) {
-            const converted = convertCurrency(
-              amount,
-              currency,
-              targetCurrency,
-              rates,
-            );
+            const converted = convertCurrency(amount, currency, targetCurrency, rates);
             totalBalance += converted;
           }
         }
@@ -640,10 +629,7 @@ export async function syncAllEnabled(): Promise<void> {
   const cronStart = Date.now();
 
   const shared = getSharedDb();
-  const allUsers = await shared
-    .select()
-    .from(users)
-    .where(isNotNull(users.tursoDbUrl));
+  const allUsers = await shared.select().from(users).where(isNotNull(users.tursoDbUrl));
 
   log.info("Cron started", { users: allUsers.length });
 
@@ -684,10 +670,7 @@ export async function syncAllEnabled(): Promise<void> {
       continue;
     }
 
-    const enabledLinks = await userDb
-      .select()
-      .from(links)
-      .where(eq(links.enabled, 1));
+    const enabledLinks = await userDb.select().from(links).where(eq(links.enabled, 1));
 
     userLog.info("Processing user", { enabledLinks: enabledLinks.length });
     totalLinks += enabledLinks.length;
@@ -704,12 +687,14 @@ export async function syncAllEnabled(): Promise<void> {
       try {
         await syncLink(userDb, link, user);
         successes++;
-      } catch (err) {
+      } catch {
         failures++;
         // syncLink already logs the error, no need to duplicate
       }
 
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise<void>((r) => {
+        setTimeout(r, 500);
+      });
     }
 
     // Balance sync (after all transaction syncs for this user)

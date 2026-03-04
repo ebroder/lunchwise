@@ -3,8 +3,7 @@ import type { paths, components } from "./lunch-money-api.js";
 
 export type LmTransaction = components["schemas"]["transactionObject"];
 export type LmManualAccount = components["schemas"]["manualAccountObject"];
-export type LmInsertTransaction =
-  components["schemas"]["insertTransactionObject"];
+export type LmInsertTransaction = components["schemas"]["insertTransactionObject"];
 export type LmUser = components["schemas"]["userObject"];
 
 export function createLunchMoneyClient(apiKey: string) {
@@ -53,9 +52,7 @@ export async function updateTransaction(
 
 export async function updateTransactions(
   apiKey: string,
-  updates: Array<
-    { id: number } & components["schemas"]["updateTransactionObject"]
-  >,
+  updates: Array<{ id: number } & components["schemas"]["updateTransactionObject"]>,
 ): Promise<void> {
   if (updates.length === 0) return;
   const client = createLunchMoneyClient(apiKey);
@@ -80,8 +77,9 @@ export async function getTransactions(
   const all: LmTransaction[] = [];
   let offset = 0;
   const limit = 1000;
+  const maxPages = 50;
 
-  while (true) {
+  for (let page = 0; page < maxPages; page++) {
     const { data, error } = await client.GET("/transactions", {
       params: {
         query: {
@@ -105,12 +103,16 @@ export async function getTransactions(
     offset += limit;
   }
 
+  if (all.length >= maxPages * limit) {
+    throw new Error(
+      `Lunch Money pagination exceeded ${maxPages} pages (${all.length} transactions). This likely indicates an unexpectedly large dataset.`,
+    );
+  }
+
   return all;
 }
 
-export async function getManualAccounts(
-  apiKey: string,
-): Promise<LmManualAccount[]> {
+export async function getManualAccounts(apiKey: string): Promise<LmManualAccount[]> {
   const client = createLunchMoneyClient(apiKey);
   const { data, error } = await client.GET("/manual_accounts");
 
@@ -147,8 +149,6 @@ export async function updateAccountBalance(
   });
 
   if (error) {
-    throw new Error(
-      `Lunch Money update balance error: ${JSON.stringify(error)}`,
-    );
+    throw new Error(`Lunch Money update balance error: ${JSON.stringify(error)}`);
   }
 }

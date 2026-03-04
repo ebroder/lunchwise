@@ -42,7 +42,7 @@ auth.get("/splitwise/callback", async (c) => {
     const state = c.req.query("state");
     const storedState = getCookie(c, "oauth_state");
 
-    if (!code || !state || state !== storedState) {
+    if (!code || !state || !storedState || state !== storedState) {
       deleteCookie(c, "oauth_state", { path: "/" });
       return c.text("Invalid OAuth callback", 400);
     }

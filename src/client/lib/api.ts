@@ -7,10 +7,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
+export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     ...options,
     headers: {
@@ -24,20 +21,21 @@ export async function api<T>(
     throw new ApiError(401, "Unauthorized");
   }
 
-  const data = await res.json();
-
   if (!res.ok) {
-    throw new ApiError(res.status, data.error || "Request failed");
+    let message = "Request failed";
+    try {
+      const data = await res.json();
+      if (data.error) message = data.error;
+    } catch {
+      // Non-JSON error body (e.g. Cloudflare 502 HTML page)
+    }
+    throw new ApiError(res.status, message);
   }
 
-  return data as T;
+  return (await res.json()) as T;
 }
 
-export function apiJson<T>(
-  path: string,
-  body: unknown,
-  method = "POST",
-): Promise<T> {
+export function apiJson<T>(path: string, body: unknown, method = "POST"): Promise<T> {
   return api<T>(path, {
     method,
     headers: { "Content-Type": "application/json" },

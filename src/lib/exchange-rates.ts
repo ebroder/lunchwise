@@ -37,9 +37,7 @@ const ENSURE_TABLE_SQL = `
   )
 `;
 
-export async function getExchangeRates(
-  shared: SharedDb,
-): Promise<ExchangeRates> {
+export async function getExchangeRates(shared: SharedDb): Promise<ExchangeRates> {
   await shared.run(sql.raw(ENSURE_TABLE_SQL));
 
   const rows = await shared.all<{
@@ -89,10 +87,10 @@ export function convertCurrency(
   const fromRate = rates[from.toUpperCase()];
   const toRate = rates[to.toUpperCase()];
 
-  if (fromRate == null) {
+  if (fromRate === undefined) {
     throw new Error(`No exchange rate for currency: ${from}`);
   }
-  if (toRate == null) {
+  if (toRate === undefined) {
     throw new Error(`No exchange rate for currency: ${to}`);
   }
 

@@ -19,17 +19,14 @@ export async function createTursoDatabase(name: string): Promise<string> {
     return `file:local-user-${name}.db`;
   }
 
-  const res = await fetch(
-    `${TURSO_PLATFORM_API_BASE}/v1/organizations/${org}/databases`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ name, group }),
+  const res = await fetch(`${TURSO_PLATFORM_API_BASE}/v1/organizations/${org}/databases`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
     },
-  );
+    body: JSON.stringify({ name, group }),
+  });
 
   if (!res.ok) {
     const body = await res.text();

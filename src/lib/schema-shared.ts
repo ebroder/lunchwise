@@ -1,8 +1,7 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
-const timestamp = (name: string) =>
-  text(name).notNull().default(sql`(datetime('now'))`);
+const timestamp = (name: string) => text(name).notNull().default(sql`(datetime('now'))`);
 
 export const users = sqliteTable("users", {
   id: integer("id").primaryKey({ autoIncrement: true }),

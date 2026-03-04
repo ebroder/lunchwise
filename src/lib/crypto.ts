@@ -22,13 +22,10 @@ async function getKeys(): Promise<Map<string, CryptoKey>> {
   const map = new Map<string, CryptoKey>();
   for (const [id, b64] of entries) {
     const raw = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
-    const key = await crypto.subtle.importKey(
-      "raw",
-      raw,
-      { name: "AES-GCM" },
-      false,
-      ["encrypt", "decrypt"],
-    );
+    const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, [
+      "encrypt",
+      "decrypt",
+    ]);
     map.set(id, key);
   }
 
@@ -49,11 +46,7 @@ export async function encrypt(plaintext: string): Promise<string> {
 
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const encoded = new TextEncoder().encode(plaintext);
-  const cipherBuf = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    key,
-    encoded,
-  );
+  const cipherBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
 
   // Combine IV + ciphertext (which includes the auth tag)
   const combined = new Uint8Array(iv.length + cipherBuf.byteLength);
@@ -66,11 +59,9 @@ export async function encrypt(plaintext: string): Promise<string> {
 export async function decrypt(value: string): Promise<string> {
   const match = value.match(KEY_PREFIX_RE);
   if (!match) {
-    // No key ID prefix: treat as plaintext (pre-encryption data).
-    // This should not happen in normal operation; log so we can detect
-    // and re-encrypt any legacy rows.
-    console.warn("crypto.decrypt: value has no key ID prefix, returning as plaintext");
-    return value;
+    throw new Error(
+      "crypto.decrypt: value has no key ID prefix (expected format '<keyId>:<base64>')",
+    );
   }
 
   const keyId = match[1];
@@ -84,11 +75,7 @@ export async function decrypt(value: string): Promise<string> {
   const iv = combined.slice(0, IV_BYTES);
   const ciphertext = combined.slice(IV_BYTES);
 
-  const plainBuf = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
-    key,
-    ciphertext,
-  );
+  const plainBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
 
   return new TextDecoder().decode(plainBuf);
 }

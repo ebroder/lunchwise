@@ -21,10 +21,11 @@ export async function getAllExpenses(
 ): Promise<SplitwiseExpense[]> {
   const client = createSplitwiseClient(accessToken);
   const pageSize = 100;
+  const maxPages = 50;
   const allExpenses: SplitwiseExpense[] = [];
   let offset = 0;
 
-  while (true) {
+  for (let page = 0; page < maxPages; page++) {
     const { data, error } = await client.GET("/get_expenses", {
       params: {
         query: {
@@ -47,15 +48,21 @@ export async function getAllExpenses(
     offset += pageSize;
 
     // Small delay between pages to be respectful
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise<void>((r) => {
+      setTimeout(r, 200);
+    });
+  }
+
+  if (allExpenses.length >= maxPages * pageSize) {
+    throw new Error(
+      `Splitwise pagination exceeded ${maxPages} pages (${allExpenses.length} expenses). This likely indicates an unexpectedly large dataset.`,
+    );
   }
 
   return allExpenses;
 }
 
-export async function getGroups(
-  accessToken: string,
-): Promise<SplitwiseGroup[]> {
+export async function getGroups(accessToken: string): Promise<SplitwiseGroup[]> {
   const client = createSplitwiseClient(accessToken);
   const { data, error } = await client.GET("/get_groups");
 
@@ -89,13 +96,8 @@ export interface CurrencyBalance {
 
 // Extract the current user's balances from a group's member list.
 // Returns one entry per currency the user has a non-zero balance in.
-export function getUserBalances(
-  group: SplitwiseGroup,
-  splitwiseUserId: string,
-): CurrencyBalance[] {
-  const member = group.members?.find(
-    (m) => String(m.id) === splitwiseUserId,
-  );
+export function getUserBalances(group: SplitwiseGroup, splitwiseUserId: string): CurrencyBalance[] {
+  const member = group.members?.find((m) => String(m.id) === splitwiseUserId);
   if (!member?.balance) return [];
 
   const balances: CurrencyBalance[] = [];
@@ -108,13 +110,8 @@ export function getUserBalances(
   return balances;
 }
 
-export function getUserShare(
-  expense: SplitwiseExpense,
-  splitwiseUserId: string,
-): number | null {
-  const userEntry = expense.users?.find(
-    (u) => String(u.user_id) === splitwiseUserId,
-  );
+export function getUserShare(expense: SplitwiseExpense, splitwiseUserId: string): number | null {
+  const userEntry = expense.users?.find((u) => String(u.user_id) === splitwiseUserId);
   if (!userEntry?.net_balance) return null;
 
   const netBalance = parseFloat(userEntry.net_balance);

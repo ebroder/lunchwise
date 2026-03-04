@@ -1,6 +1,5 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { eq, desc } from "drizzle-orm";
-import type { Context } from "hono";
 import { requireAuthJson, type AuthEnv } from "../lib/auth.js";
 import { credentials, links, syncLog } from "../lib/schema-user.js";
 import { syncLink, syncBalances, describeError } from "../lib/sync.js";
@@ -120,10 +119,7 @@ api.get("/lunch-money/accounts", async (c) => {
 
 api.get("/links", async (c) => {
   const db = c.get("db");
-  const rows = await db
-    .select()
-    .from(links)
-    .orderBy(desc(links.createdAt));
+  const rows = await db.select().from(links).orderBy(desc(links.createdAt));
   return c.json(rows);
 });
 
@@ -131,10 +127,7 @@ api.get("/links/:id", async (c) => {
   const linkId = parseLinkId(c);
   if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
-  const rows = await db
-    .select()
-    .from(links)
-    .where(eq(links.id, linkId));
+  const rows = await db.select().from(links).where(eq(links.id, linkId));
   const link = rows[0];
   if (!link) {
     return c.json({ error: "Link not found" }, 404);
@@ -270,10 +263,7 @@ api.get("/links/:id/dry-run", async (c) => {
   if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
 
-  const rows = await db
-    .select()
-    .from(links)
-    .where(eq(links.id, linkId));
+  const rows = await db.select().from(links).where(eq(links.id, linkId));
   const link = rows[0];
   if (!link) {
     return c.json({ error: "Link not found" }, 404);
@@ -354,10 +344,7 @@ api.post("/sync/:linkId", async (c) => {
   if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
 
-  const rows = await db
-    .select()
-    .from(links)
-    .where(eq(links.id, linkId));
+  const rows = await db.select().from(links).where(eq(links.id, linkId));
   const link = rows[0];
   if (!link) {
     return c.json({ error: "Link not found" }, 404);

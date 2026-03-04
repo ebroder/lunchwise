@@ -79,9 +79,26 @@ dashboard route imports and serves after auth. Separate tsconfigs: root uses
 npm run dev          # wrangler dev + vite dev (with proxy)
 npm run build        # vite build + Tailwind CSS + generate SPA HTML module
 npm run deploy       # build + wrangler deploy
+npm run lint         # oxlint (errors + warnings)
+npm run format       # biome format --write (auto-fix)
+npm run format:check # biome format (check only, used in CI)
 npm run typecheck    # tsc --noEmit (server + client)
 npm test             # vitest run
 ```
+
+## Linting and formatting
+
+**Linting** uses [oxlint](https://oxc.rs/docs/guide/usage/linter) via
+`.oxlintrc.json`. Correctness and suspicious rules are errors; pedantic and
+style are warnings. Many opinionated style rules are disabled to match the
+project's existing conventions.
+
+**Formatting** uses [Biome](https://biomejs.dev/) (formatter only, linter
+disabled) via `biome.json`. 2-space indent, 100-char line width, double
+quotes, always semicolons, trailing commas everywhere.
+
+To fix formatting errors, run `biome format --write .` (not by hand). Both
+tools run in CI before typecheck.
 
 ## Deployment
 

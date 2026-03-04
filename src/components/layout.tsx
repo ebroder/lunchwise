@@ -1,8 +1,10 @@
 import type { FC, PropsWithChildren } from "hono/jsx";
 
-export const Layout: FC<
-  PropsWithChildren<{ title?: string; bare?: boolean }>
-> = ({ children, title, bare }) => {
+export const Layout: FC<PropsWithChildren<{ title?: string; bare?: boolean }>> = ({
+  children,
+  title,
+  bare,
+}) => {
   return (
     <html lang="en">
       <head>
@@ -10,11 +12,7 @@ export const Layout: FC<
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>{title ? `${title} - Lunchwise` : "Lunchwise"}</title>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link
-          rel="preconnect"
-          href="https://fonts.gstatic.com"
-          crossorigin=""
-        />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
         <link
           href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Serif+Display&display=swap"
           rel="stylesheet"
