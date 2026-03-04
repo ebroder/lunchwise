@@ -454,11 +454,11 @@ export function LinkEdit({ params }: { params: { id: string } }) {
                 Would set account balance to{" "}
                 <span class="font-medium text-stone-900 dark:text-stone-100">
                   {dryRunData.balance.currency}{" "}
-                  {dryRunData.balance.balance?.toFixed(4)}
+                  {dryRunData.balance.balance?.toFixed(2)}
                 </span>
               </p>
               {dryRunData.balance.balances_by_currency &&
-                dryRunData.balance.balances_by_currency.length > 1 && (
+                new Set(dryRunData.balance.balances_by_currency.map((b) => b.currency)).size > 1 && (
                 <p class="text-xs text-stone-500 dark:text-stone-400 mt-1">
                   Converted from:{" "}
                   {dryRunData.balance.balances_by_currency
