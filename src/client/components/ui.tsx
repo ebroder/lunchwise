@@ -10,9 +10,9 @@ const buttonStyles: Record<ButtonVariant, string> = {
   secondary:
     "text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 px-3 py-1 rounded border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition-colors cursor-pointer disabled:opacity-50",
   ghost:
-    "text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition-colors cursor-pointer",
+    "text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition-colors cursor-pointer disabled:opacity-50",
   destructive:
-    "text-sm text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors cursor-pointer",
+    "text-sm text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 transition-colors cursor-pointer disabled:opacity-50",
 };
 
 interface ButtonProps extends ComponentProps<"button"> {

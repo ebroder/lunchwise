@@ -22,25 +22,10 @@ import { getExchangeRates, convertCurrency, type ExchangeRates } from "./exchang
 import type { User } from "./auth.js";
 import { decrypt } from "./crypto.js";
 import { createLogger } from "./logger.js";
+import { describeError } from "./errors.js";
 
 type Link = typeof links.$inferSelect;
 
-/** Extract a useful error message, including libsql error codes when available. */
-export function describeError(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  const e = err as unknown as Record<string, unknown>;
-  const parts: string[] = [];
-  // Error class name (e.g. LibsqlError vs Error)
-  if (err.constructor.name !== "Error") parts.push(`[${err.constructor.name}]`);
-  if (e.code) parts.push(`code=${e.code}`);
-  if (e.rawCode !== undefined) parts.push(`rawCode=${e.rawCode}`);
-  parts.push(err.message);
-  // Check for a wrapped cause
-  if (err.cause instanceof Error) {
-    parts.push(`| cause: ${describeError(err.cause)}`);
-  }
-  return parts.join(" ");
-}
 type TrackedRow = typeof syncedTransactions.$inferSelect;
 
 export interface PlannedAction {
@@ -191,7 +176,15 @@ async function planSync(
 
   const { tracked, backfilledAmounts } = await buildTrackedMap(db, link, apiKey, dryRun, log);
 
-  const updatedAfter = link.lastSyncedAt ?? link.startDate ?? "2000-01-01T00:00:00Z";
+  // Subtract 2 minutes from lastSyncedAt to cover expenses updated during the
+  // previous fetch window (TOCTOU). Re-fetching overlapping expenses is safe
+  // because the planner skips already-synced ones (matching splitwiseUpdatedAt).
+  let updatedAfter = link.startDate ?? "2000-01-01T00:00:00Z";
+  if (link.lastSyncedAt) {
+    const d = new Date(link.lastSyncedAt);
+    d.setMinutes(d.getMinutes() - 2);
+    updatedAfter = d.toISOString();
+  }
 
   const expenses = await getAllExpenses(user.splitwiseAccessToken, {
     group_id: link.splitwiseGroupId ? parseInt(link.splitwiseGroupId, 10) : undefined,
@@ -372,19 +365,37 @@ async function executeActions(
 
   // Bulk create in LM, then record tracking rows
   if (creates.length > 0) {
-    const inserted = await insertTransactions(
+    const result = await insertTransactions(
       apiKey,
       creates.map((a) => a.lmData),
     );
-    log.info("LM insert complete", { requested: creates.length, returned: inserted.length });
+    log.info("LM insert complete", {
+      requested: creates.length,
+      returned: result.transactions.length,
+      skipped: result.skippedDuplicates.length,
+    });
+
+    // Build ID map from both successful inserts and skipped duplicates
     const byExtId = new Map<string, number>();
-    for (const tx of inserted) {
+    for (const tx of result.transactions) {
       if (tx.external_id) byExtId.set(tx.external_id, tx.id);
     }
+    for (const dup of result.skippedDuplicates) {
+      const extId = dup.request_transaction?.external_id;
+      if (extId && dup.existing_transaction_id) {
+        byExtId.set(extId, dup.existing_transaction_id);
+      }
+    }
+
     for (const action of creates) {
       const lmId = byExtId.get(action.expenseId);
       if (!lmId) {
-        throw new Error(`Lunch Money returned no transaction for expense ${action.expenseId}`);
+        // Skip rather than throw -- the next sync will retry this expense
+        // and LM will return it as a skipped duplicate with the existing ID
+        log.error("No LM transaction ID for expense after insert", {
+          expenseId: action.expenseId,
+        });
+        continue;
       }
       dbStmts.push({
         sql: "INSERT INTO synced_transactions (link_id, splitwise_expense_id, lm_transaction_id, splitwise_updated_at) VALUES (?, ?, ?, ?)",
@@ -432,13 +443,28 @@ async function executeActions(
     }
   }
 
-  // Batch all DB writes
+  // Batch all DB writes at the end to minimize subrequests. Each batch() call
+  // is one subrequest to Turso, and Workers have a 1000 subrequest limit per
+  // invocation. Writing incrementally after each phase would use more. If a
+  // later phase fails, earlier phases' LM changes are orphaned, but the next
+  // sync self-heals via duplicate external_id handling in the creates path.
   if (dbStmts.length > 0) {
-    const BATCH = 100;
-    for (let i = 0; i < dbStmts.length; i += BATCH) {
-      await db.$client.batch(dbStmts.slice(i, i + BATCH));
+    try {
+      const BATCH = 100;
+      for (let i = 0; i < dbStmts.length; i += BATCH) {
+        await db.$client.batch(dbStmts.slice(i, i + BATCH));
+      }
+      log.info("DB writes complete", { statements: dbStmts.length });
+    } catch (err) {
+      log.error("DB writes failed after LM operations completed", {
+        error: describeError(err),
+        cause: err,
+        lmCreated: creates.length,
+        lmUpdated: updates.length,
+        lmDeleted: deletes.length,
+      });
+      throw err;
     }
-    log.info("DB writes complete", { statements: dbStmts.length });
   }
 
   return {
@@ -484,7 +510,7 @@ export async function syncLink(
   }
 
   // Execute phase: apply actions to LM and local DB
-  let logEntryId: number;
+  let logEntryId: number | undefined;
   {
     const [logEntry] = await db
       .insert(syncLog)
@@ -494,20 +520,29 @@ export async function syncLink(
   }
 
   try {
-    await executeActions(db, link, apiKey, actions, log);
+    const counts = await executeActions(db, link, apiKey, actions, log);
 
     // Record timestamps for backfilled rows (no LM update needed).
     // Batch to stay within Cloudflare Workers subrequest limits.
     if (stamps.length > 0) {
-      const stmts = stamps.map((s) => ({
-        sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, updated_at = datetime('now') WHERE id = ?",
-        args: [s.splitwiseUpdatedAt, s.trackedId],
-      }));
-      const BATCH = 100;
-      for (let i = 0; i < stmts.length; i += BATCH) {
-        await db.$client.batch(stmts.slice(i, i + BATCH));
+      try {
+        const stmts = stamps.map((s) => ({
+          sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, updated_at = datetime('now') WHERE id = ?",
+          args: [s.splitwiseUpdatedAt, s.trackedId],
+        }));
+        const BATCH = 100;
+        for (let i = 0; i < stmts.length; i += BATCH) {
+          await db.$client.batch(stmts.slice(i, i + BATCH));
+        }
+        log.info("Stamped backfill rows", { count: stamps.length });
+      } catch (err) {
+        log.error("Stamp writes failed after sync completed", {
+          error: describeError(err),
+          cause: err,
+          stamps: stamps.length,
+        });
+        throw err;
       }
-      log.info("Stamped backfill rows", { count: stamps.length });
     }
 
     // Update sync cursor
@@ -522,31 +557,40 @@ export async function syncLink(
         finishedAt: sql`datetime('now')`,
         status: "success",
         expensesFetched: result.expenses_fetched,
-        created: result.created,
-        updated: result.updated,
-        deleted: result.deleted,
+        created: counts.created,
+        updated: counts.updated,
+        deleted: counts.deleted,
       })
       .where(eq(syncLog.id, logEntryId));
 
     log.info("Sync complete", {
-      created: result.created,
-      updated: result.updated,
-      deleted: result.deleted,
+      created: counts.created,
+      updated: counts.updated,
+      deleted: counts.deleted,
     });
   } catch (err) {
-    log.error("Sync failed", { error: describeError(err) });
-    await db
-      .update(syncLog)
-      .set({
-        finishedAt: sql`datetime('now')`,
-        status: "error",
-        expensesFetched: result.expenses_fetched,
-        created: result.created,
-        updated: result.updated,
-        deleted: result.deleted,
-        errorMessage: describeError(err),
-      })
-      .where(eq(syncLog.id, logEntryId));
+    log.error("Sync failed", { error: describeError(err), cause: err });
+    if (logEntryId !== undefined) {
+      try {
+        await db
+          .update(syncLog)
+          .set({
+            finishedAt: sql`datetime('now')`,
+            status: "error",
+            expensesFetched: result.expenses_fetched,
+            created: result.created,
+            updated: result.updated,
+            deleted: result.deleted,
+            errorMessage: describeError(err),
+          })
+          .where(eq(syncLog.id, logEntryId));
+      } catch (logErr) {
+        log.error("Failed to record sync error in sync_log", {
+          error: describeError(logErr),
+          cause: logErr,
+        });
+      }
+    }
     throw err;
   }
 
@@ -619,6 +663,7 @@ export async function syncBalances(
       log.error("Balance sync failed for account", {
         accountId,
         error: describeError(err),
+        cause: err,
       });
     }
   }
@@ -647,63 +692,69 @@ export async function syncAllEnabled(): Promise<void> {
   let totalLinks = 0;
   let successes = 0;
   let failures = 0;
+  let skippedUsers = 0;
 
   for (const row of allUsers) {
     const userLog = log.with({ userId: row.id });
-    const userDb = getUserDb(row.tursoDbUrl!);
-    await initUserDb(userDb);
+    try {
+      const userDb = getUserDb(row.tursoDbUrl!);
+      await initUserDb(userDb);
 
-    // Clean up stale sync_log entries from interrupted runs
-    const cleaned = await userDb.run(sql`
-      UPDATE sync_log
-      SET status = 'error', finished_at = datetime('now'), error_message = 'Process interrupted'
-      WHERE status = 'running'
-    `);
-    if (cleaned.rowsAffected > 0) {
-      userLog.warn("Cleaned stale sync_log entries", { count: cleaned.rowsAffected });
-    }
-
-    const creds = await userDb.select().from(credentials).limit(1);
-    const cred = creds[0];
-    if (!cred?.lunchMoneyApiKey) {
-      userLog.warn("Skipping user: no Lunch Money API key");
-      continue;
-    }
-
-    const enabledLinks = await userDb.select().from(links).where(eq(links.enabled, 1));
-
-    userLog.info("Processing user", { enabledLinks: enabledLinks.length });
-    totalLinks += enabledLinks.length;
-
-    const user: User = {
-      id: row.id,
-      splitwiseUserId: row.splitwiseUserId,
-      tursoDbUrl: row.tursoDbUrl!,
-      splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
-      lunchMoneyApiKey: await decrypt(cred.lunchMoneyApiKey),
-    };
-
-    for (const link of enabledLinks) {
-      try {
-        await syncLink(userDb, link, user);
-        successes++;
-      } catch {
-        failures++;
-        // syncLink already logs the error, no need to duplicate
+      // Clean up stale sync_log entries from interrupted runs
+      const cleaned = await userDb.run(sql`
+        UPDATE sync_log
+        SET status = 'error', finished_at = datetime('now'), error_message = 'Process interrupted'
+        WHERE status = 'running'
+      `);
+      if (cleaned.rowsAffected > 0) {
+        userLog.warn("Cleaned stale sync_log entries", { count: cleaned.rowsAffected });
       }
 
-      await new Promise<void>((r) => {
-        setTimeout(r, 500);
-      });
-    }
-
-    // Balance sync (after all transaction syncs for this user)
-    if (exchangeRates) {
-      try {
-        await syncBalances(enabledLinks, user, exchangeRates, userLog);
-      } catch (err) {
-        userLog.error("Balance sync failed", { error: describeError(err) });
+      const creds = await userDb.select().from(credentials).limit(1);
+      const cred = creds[0];
+      if (!cred?.lunchMoneyApiKey) {
+        userLog.warn("Skipping user: no Lunch Money API key");
+        continue;
       }
+
+      const enabledLinks = await userDb.select().from(links).where(eq(links.enabled, 1));
+
+      userLog.info("Processing user", { enabledLinks: enabledLinks.length });
+      totalLinks += enabledLinks.length;
+
+      const user: User = {
+        id: row.id,
+        splitwiseUserId: row.splitwiseUserId,
+        tursoDbUrl: row.tursoDbUrl!,
+        splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
+        lunchMoneyApiKey: await decrypt(cred.lunchMoneyApiKey),
+      };
+
+      for (const link of enabledLinks) {
+        try {
+          await syncLink(userDb, link, user);
+          successes++;
+        } catch {
+          failures++;
+          // syncLink already logs the error, no need to duplicate
+        }
+
+        await new Promise<void>((r) => {
+          setTimeout(r, 500);
+        });
+      }
+
+      // Balance sync (after all transaction syncs for this user)
+      if (exchangeRates) {
+        try {
+          await syncBalances(enabledLinks, user, exchangeRates, userLog);
+        } catch (err) {
+          userLog.error("Balance sync failed", { error: describeError(err), cause: err });
+        }
+      }
+    } catch (err) {
+      skippedUsers++;
+      userLog.error("Skipping user: setup failed", { error: describeError(err), cause: err });
     }
   }
 
@@ -712,6 +763,7 @@ export async function syncAllEnabled(): Promise<void> {
     totalLinks,
     successes,
     failures,
+    skippedUsers,
     elapsedMs: Date.now() - cronStart,
   });
 }

@@ -1,9 +1,11 @@
 import createClient from "openapi-fetch";
 import type { paths, components } from "./lunch-money-api.js";
+import { describeError } from "./errors.js";
 
 export type LmTransaction = components["schemas"]["transactionObject"];
 export type LmManualAccount = components["schemas"]["manualAccountObject"];
 export type LmInsertTransaction = components["schemas"]["insertTransactionObject"];
+export type LmSkippedDuplicate = components["schemas"]["skippedExistingExternalIdObject"];
 export type LmUser = components["schemas"]["userObject"];
 
 export function createLunchMoneyClient(apiKey: string) {
@@ -13,24 +15,34 @@ export function createLunchMoneyClient(apiKey: string) {
   });
 }
 
+const LM_BATCH = 500;
+
 export async function insertTransactions(
   apiKey: string,
   transactions: LmInsertTransaction[],
-): Promise<LmTransaction[]> {
+): Promise<{ transactions: LmTransaction[]; skippedDuplicates: LmSkippedDuplicate[] }> {
   const client = createLunchMoneyClient(apiKey);
-  const { data, error } = await client.POST("/transactions", {
-    body: {
-      transactions,
-      skip_duplicates: false,
-      skip_balance_update: true,
-    },
-  });
+  const allTransactions: LmTransaction[] = [];
+  const allSkipped: LmSkippedDuplicate[] = [];
 
-  if (error) {
-    throw new Error(`Lunch Money API error: ${JSON.stringify(error)}`);
+  for (let i = 0; i < transactions.length; i += LM_BATCH) {
+    const { data, error, response } = await client.POST("/transactions", {
+      body: {
+        transactions: transactions.slice(i, i + LM_BATCH),
+        skip_duplicates: false,
+        skip_balance_update: true,
+      },
+    });
+
+    if (error) {
+      throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+    }
+
+    allTransactions.push(...data.transactions);
+    allSkipped.push(...(data.skipped_duplicates ?? []));
   }
 
-  return data.transactions;
+  return { transactions: allTransactions, skippedDuplicates: allSkipped };
 }
 
 export async function updateTransaction(
@@ -39,14 +51,14 @@ export async function updateTransaction(
   update: components["schemas"]["updateTransactionObject"],
 ): Promise<void> {
   const client = createLunchMoneyClient(apiKey);
-  const { error } = await client.PUT("/transactions", {
+  const { error, response } = await client.PUT("/transactions", {
     body: {
       transactions: [{ id: transactionId, ...update }],
     },
   });
 
   if (error) {
-    throw new Error(`Lunch Money API error: ${JSON.stringify(error)}`);
+    throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
   }
 }
 
@@ -56,12 +68,15 @@ export async function updateTransactions(
 ): Promise<void> {
   if (updates.length === 0) return;
   const client = createLunchMoneyClient(apiKey);
-  const { error } = await client.PUT("/transactions", {
-    body: { transactions: updates },
-  });
 
-  if (error) {
-    throw new Error(`Lunch Money API error: ${JSON.stringify(error)}`);
+  for (let i = 0; i < updates.length; i += LM_BATCH) {
+    const { error, response } = await client.PUT("/transactions", {
+      body: { transactions: updates.slice(i, i + LM_BATCH) },
+    });
+
+    if (error) {
+      throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+    }
   }
 }
 
@@ -80,7 +95,7 @@ export async function getTransactions(
   const maxPages = 50;
 
   for (let page = 0; page < maxPages; page++) {
-    const { data, error } = await client.GET("/transactions", {
+    const { data, error, response } = await client.GET("/transactions", {
       params: {
         query: {
           manual_account_id: params.manual_account_id,
@@ -95,7 +110,7 @@ export async function getTransactions(
     });
 
     if (error) {
-      throw new Error(`Lunch Money API error: ${JSON.stringify(error)}`);
+      throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
     }
 
     all.push(...data.transactions);
@@ -114,10 +129,10 @@ export async function getTransactions(
 
 export async function getManualAccounts(apiKey: string): Promise<LmManualAccount[]> {
   const client = createLunchMoneyClient(apiKey);
-  const { data, error } = await client.GET("/manual_accounts");
+  const { data, error, response } = await client.GET("/manual_accounts");
 
   if (error) {
-    throw new Error(`Lunch Money API error: ${JSON.stringify(error)}`);
+    throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
   }
 
   return data.manual_accounts ?? [];
@@ -125,10 +140,10 @@ export async function getManualAccounts(apiKey: string): Promise<LmManualAccount
 
 export async function getUser(apiKey: string): Promise<LmUser> {
   const client = createLunchMoneyClient(apiKey);
-  const { data, error } = await client.GET("/me");
+  const { data, error, response } = await client.GET("/me");
 
   if (error) {
-    throw new Error(`Lunch Money API error: ${JSON.stringify(error)}`);
+    throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
   }
 
   return data;
@@ -140,7 +155,7 @@ export async function updateAccountBalance(
   balance: number,
 ): Promise<void> {
   const client = createLunchMoneyClient(apiKey);
-  const { error } = await client.PUT("/manual_accounts/{id}", {
+  const { error, response } = await client.PUT("/manual_accounts/{id}", {
     params: { path: { id: accountId } },
     body: {
       balance,
@@ -149,6 +164,8 @@ export async function updateAccountBalance(
   });
 
   if (error) {
-    throw new Error(`Lunch Money update balance error: ${JSON.stringify(error)}`);
+    throw new Error(
+      `Lunch Money update balance error (${response.status}): ${describeError(error)}`,
+    );
   }
 }

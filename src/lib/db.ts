@@ -87,7 +87,7 @@ export async function initUserDb(db: UserDb): Promise<void> {
   // Idempotent table creation (handles brand-new DBs)
   await db.run(sql`
     CREATE TABLE IF NOT EXISTS credentials (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id = 1),
       splitwise_access_token TEXT NOT NULL,
       lunch_money_api_key TEXT,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -157,23 +157,34 @@ export async function initUserDb(db: UserDb): Promise<void> {
     sql`SELECT version FROM schema_version WHERE id = 1`,
   );
   const currentVersion = versionRows[0]?.version ?? 0;
-  const latestVersion = migrations.length > 0 ? migrations[migrations.length - 1].version : 0;
+  const latestVersion = migrations.length > 0 ? Math.max(...migrations.map((m) => m.version)) : 0;
 
   if (currentVersion < latestVersion) {
     for (const migration of migrations) {
       if (migration.version > currentVersion) {
-        for (const stmt of migration.sql) {
-          try {
-            await db.run(sql.raw(stmt));
-          } catch (err) {
-            // Tolerate "duplicate column" from ALTER TABLE ADD COLUMN
-            // on fresh DBs where CREATE TABLE already includes the column.
-            // Drizzle wraps the SQLite error in the cause chain.
-            if (!isDuplicateColumnError(err)) throw err;
+        // Batch migration SQL + version bump as a single atomic unit
+        const stmts = [
+          ...migration.sql.map((s) => ({ sql: s, args: [] as (string | number)[] })),
+          {
+            sql: "UPDATE schema_version SET version = ? WHERE id = 1",
+            args: [migration.version] as (string | number)[],
+          },
+        ];
+        try {
+          await db.$client.batch(stmts);
+        } catch (err) {
+          // Tolerate "duplicate column" from ALTER TABLE ADD COLUMN
+          // on fresh DBs where CREATE TABLE already includes the column.
+          // The batch rolled back, so just bump the version.
+          if (isDuplicateColumnError(err)) {
+            await db.run(
+              sql`UPDATE schema_version SET version = ${migration.version} WHERE id = 1`,
+            );
+          } else {
+            throw err;
           }
         }
       }
     }
-    await db.run(sql`UPDATE schema_version SET version = ${latestVersion} WHERE id = 1`);
   }
 }

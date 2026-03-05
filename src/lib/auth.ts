@@ -8,8 +8,12 @@ import { users } from "./schema-shared.js";
 import { credentials } from "./schema-user.js";
 import { env } from "./env.js";
 import { decrypt } from "./crypto.js";
+import { createLogger } from "./logger.js";
+import { describeError } from "./errors.js";
 
-const COOKIE_NAME = "lunchwise_session";
+function cookieName(): string {
+  return env.NODE_ENV === "production" ? "__Secure-lunchwise_session" : "lunchwise_session";
+}
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 function getSecret(): Uint8Array {
@@ -26,7 +30,7 @@ export async function createSession(c: Context, userId: number): Promise<void> {
     .setExpirationTime("30d")
     .sign(getSecret());
 
-  setCookie(c, COOKIE_NAME, token, {
+  setCookie(c, cookieName(), token, {
     httpOnly: true,
     secure: env.NODE_ENV === "production",
     sameSite: "Lax",
@@ -36,14 +40,17 @@ export async function createSession(c: Context, userId: number): Promise<void> {
 }
 
 export async function getUserId(c: Context): Promise<number | null> {
-  const token = getCookie(c, COOKIE_NAME);
+  const token = getCookie(c, cookieName());
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, getSecret(), {
       algorithms: ["HS256"],
     });
-    return payload.sub ? parseInt(payload.sub, 10) : null;
-  } catch {
+    const id = payload.sub ? parseInt(payload.sub, 10) : null;
+    return Number.isFinite(id) ? id : null;
+  } catch (err) {
+    const log = createLogger({ source: "auth" });
+    log.debug("JWT verification failed", { error: describeError(err) });
     return null;
   }
 }
@@ -67,13 +74,17 @@ export type AuthEnv = {
 };
 
 export function clearSession(c: Context): void {
-  deleteCookie(c, COOKIE_NAME, { path: "/" });
+  deleteCookie(c, cookieName(), { path: "/" });
 }
 
 // Tracks which per-user DBs have had initUserDb() run in this isolate.
 // Workers isolates are short-lived (minutes to hours), so unbounded growth
 // is not a concern. The set resets when the isolate is recycled.
 const initializedDbs = new Set<string>();
+
+export function markDbInitialized(url: string): void {
+  initializedDbs.add(url);
+}
 
 async function resolveAuth(c: Context): Promise<{ user: User; db: UserDb } | null> {
   const userId = await getUserId(c);

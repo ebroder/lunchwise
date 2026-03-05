@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/cloudflare";
 import { env } from "./env.js";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -15,7 +16,7 @@ export interface Logger {
   debug(msg: string, fields?: Fields): void;
   info(msg: string, fields?: Fields): void;
   warn(msg: string, fields?: Fields): void;
-  error(msg: string, fields?: Fields): void;
+  error(msg: string, fields?: Fields & { cause?: unknown }): void;
   with(context: Fields): Logger;
 }
 
@@ -49,7 +50,16 @@ export function createLogger(context: Fields = {}): Logger {
       if (getMinLevel() <= LEVELS.warn) emit("warn", msg, { ...context, ...fields });
     },
     error(msg, fields) {
-      if (getMinLevel() <= LEVELS.error) emit("error", msg, { ...context, ...fields });
+      const { cause, ...rest } = { ...context, ...fields };
+      if (getMinLevel() <= LEVELS.error) {
+        emit("error", msg, rest);
+
+        const err = cause instanceof Error ? cause : new Error(msg);
+        Sentry.withScope((scope) => {
+          scope.setExtras(rest);
+          Sentry.captureException(err);
+        });
+      }
     },
     with(extra) {
       return createLogger({ ...context, ...extra });

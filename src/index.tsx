@@ -1,7 +1,9 @@
 import * as Sentry from "@sentry/cloudflare";
 import { app } from "./app.js";
+import { resetKeyCache } from "./lib/crypto.js";
 import { initEnv } from "./lib/env.js";
-import { syncAllEnabled, describeError } from "./lib/sync.js";
+import { syncAllEnabled } from "./lib/sync.js";
+import { describeError } from "./lib/errors.js";
 import { createLogger } from "./lib/logger.js";
 
 export default Sentry.withSentry(
@@ -16,6 +18,7 @@ export default Sentry.withSentry(
       ctx: ExecutionContext,
     ): Promise<Response> {
       initEnv(workerEnv);
+      resetKeyCache();
       return app.fetch(request, workerEnv, ctx);
     },
 
@@ -25,6 +28,7 @@ export default Sentry.withSentry(
       ctx: ExecutionContext,
     ): Promise<void> {
       initEnv(workerEnv);
+      resetKeyCache();
       const log = createLogger({ source: "cron" });
       ctx.waitUntil(
         Sentry.withMonitor("lunchwise-sync", () => syncAllEnabled(), {
@@ -33,8 +37,7 @@ export default Sentry.withSentry(
           maxRuntime: 10,
           timezone: "UTC",
         }).catch((err) => {
-          Sentry.captureException(err);
-          log.error("Cron handler failed", { error: describeError(err) });
+          log.error("Cron handler failed", { error: describeError(err), cause: err });
         }),
       );
     },

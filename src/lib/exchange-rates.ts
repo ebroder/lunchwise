@@ -37,8 +37,13 @@ const ENSURE_TABLE_SQL = `
   )
 `;
 
+let tableEnsured = false;
+
 export async function getExchangeRates(shared: SharedDb): Promise<ExchangeRates> {
-  await shared.run(sql.raw(ENSURE_TABLE_SQL));
+  if (!tableEnsured) {
+    await shared.run(sql.raw(ENSURE_TABLE_SQL));
+    tableEnsured = true;
+  }
 
   const rows = await shared.all<{
     rates_json: string;
@@ -49,7 +54,11 @@ export async function getExchangeRates(shared: SharedDb): Promise<ExchangeRates>
   const nowUnix = Math.floor(Date.now() / 1000);
 
   if (row && nowUnix < row.next_update_at) {
-    return JSON.parse(row.rates_json) as ExchangeRates;
+    try {
+      return JSON.parse(row.rates_json) as ExchangeRates;
+    } catch {
+      // Corrupted cache; fall through to API fetch
+    }
   }
 
   try {
@@ -68,7 +77,11 @@ export async function getExchangeRates(shared: SharedDb): Promise<ExchangeRates>
   } catch (err) {
     // If the API is down but we have stale cached data, use it
     if (row) {
-      return JSON.parse(row.rates_json) as ExchangeRates;
+      try {
+        return JSON.parse(row.rates_json) as ExchangeRates;
+      } catch {
+        // Corrupted cache and API down; throw the API error
+      }
     }
     throw err;
   }

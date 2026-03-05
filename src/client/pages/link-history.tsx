@@ -47,9 +47,7 @@ export function LinkHistory({ params }: { params: { id: string } }) {
 
       {loading ? (
         <p class="text-sm text-stone-500 dark:text-stone-400">Loading...</p>
-      ) : logs.length === 0 ? (
-        <p class="text-sm text-stone-500 dark:text-stone-400">No sync runs yet.</p>
-      ) : (
+      ) : logs.length > 0 ? (
         <div class={`${card} overflow-hidden`}>
           <table class="w-full text-sm">
             <thead class="bg-stone-50 dark:bg-stone-800/50 border-b border-stone-200 dark:border-stone-800">
@@ -113,7 +111,9 @@ export function LinkHistory({ params }: { params: { id: string } }) {
             </tbody>
           </table>
         </div>
-      )}
+      ) : !error ? (
+        <p class="text-sm text-stone-500 dark:text-stone-400">No sync runs yet.</p>
+      ) : null}
     </div>
   );
 }

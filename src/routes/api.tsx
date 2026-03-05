@@ -2,7 +2,8 @@ import { Hono, type Context } from "hono";
 import { eq, desc } from "drizzle-orm";
 import { requireAuthJson, type AuthEnv } from "../lib/auth.js";
 import { credentials, links, syncLog } from "../lib/schema-user.js";
-import { syncLink, syncBalances, describeError } from "../lib/sync.js";
+import { syncLink, syncBalances } from "../lib/sync.js";
+import { describeError } from "../lib/errors.js";
 import { createSplitwiseClient, getGroups, getGroup, getUserBalances } from "../lib/splitwise.js";
 import { createLunchMoneyClient, getManualAccounts, getUser } from "../lib/lunch-money.js";
 import { getExchangeRates, convertCurrency } from "../lib/exchange-rates.js";
@@ -13,6 +14,13 @@ import { createLogger } from "../lib/logger.js";
 const api = new Hono<AuthEnv>();
 
 api.use("*", requireAuthJson);
+
+api.onError((err, c) => {
+  if (err instanceof SyntaxError) {
+    return c.json({ error: "Invalid JSON" }, 400);
+  }
+  throw err;
+});
 
 api.use("*", async (c, next) => {
   const limiter = c.env.RATE_LIMITER;
@@ -65,6 +73,10 @@ api.post("/settings/lunch-money", async (c) => {
     })
     .where(eq(credentials.id, 1));
 
+  const user = c.get("user");
+  const log = createLogger({ source: "api", userId: user.id });
+  log.info("Lunch Money API key updated");
+
   return c.json({ ok: true });
 });
 
@@ -80,6 +92,10 @@ api.delete("/settings/lunch-money", async (c) => {
     .set({ lunchMoneyApiKey: null, updatedAt: new Date().toISOString() })
     .where(eq(credentials.id, 1));
 
+  const user = c.get("user");
+  const log = createLogger({ source: "api", userId: user.id });
+  log.info("Lunch Money API key removed");
+
   return c.json({ ok: true });
 });
 
@@ -88,11 +104,11 @@ api.delete("/settings/lunch-money", async (c) => {
 api.get("/splitwise/groups", async (c) => {
   const user = c.get("user");
   const sw = createSplitwiseClient(user.splitwiseAccessToken);
-  const { data, error } = await sw.GET("/get_groups");
+  const { data, error, response } = await sw.GET("/get_groups");
 
   if (error) {
     const log = createLogger({ source: "api", endpoint: "splitwise/groups" });
-    log.error("Failed to fetch Splitwise groups", { error });
+    log.error("Failed to fetch Splitwise groups", { error, statusCode: response.status });
     return c.json({ error: "Failed to fetch groups" }, 500);
   }
 
@@ -110,7 +126,7 @@ api.get("/lunch-money/accounts", async (c) => {
     return c.json(accounts);
   } catch (err) {
     const log = createLogger({ source: "api", endpoint: "lunch-money/accounts" });
-    log.error("Failed to fetch LM accounts", { error: describeError(err) });
+    log.error("Failed to fetch LM accounts", { error: describeError(err), cause: err });
     return c.json({ error: "Failed to fetch accounts" }, 500);
   }
 });
@@ -168,6 +184,10 @@ api.post("/links", async (c) => {
     })
     .returning({ id: links.id });
 
+  const user = c.get("user");
+  const log = createLogger({ source: "api", userId: user.id });
+  log.info("Link created", { linkId: created.id });
+
   return c.json({ id: created.id });
 });
 
@@ -211,6 +231,10 @@ api.put("/links/:id", async (c) => {
     })
     .where(eq(links.id, linkId));
 
+  const user = c.get("user");
+  const log = createLogger({ source: "api", userId: user.id });
+  log.info("Link updated", { linkId, enabled: !!body.enabled });
+
   return c.json({ ok: true });
 });
 
@@ -237,6 +261,11 @@ api.delete("/links/:id", async (c) => {
       args: [linkId],
     },
   ]);
+
+  const user = c.get("user");
+  const log = createLogger({ source: "api", userId: user.id });
+  log.info("Link deleted", { linkId });
+
   return c.json({ ok: true });
 });
 
@@ -331,7 +360,7 @@ api.get("/links/:id/dry-run", async (c) => {
     });
   } catch (err) {
     const log = createLogger({ source: "api", endpoint: "dry-run", linkId });
-    log.error("Dry run failed", { error: describeError(err) });
+    log.error("Dry run failed", { error: describeError(err), cause: err });
     return c.json({ error: "Dry run failed" }, 500);
   }
 });
@@ -372,7 +401,7 @@ api.post("/sync/:linkId", async (c) => {
     });
   } catch (err) {
     const log = createLogger({ source: "api", endpoint: "sync", linkId });
-    log.error("Sync failed", { error: describeError(err) });
+    log.error("Sync failed", { error: describeError(err), cause: err });
     return c.json({ error: "Sync failed" }, 500);
   }
 });

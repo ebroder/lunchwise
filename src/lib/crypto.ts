@@ -6,6 +6,12 @@ const KEY_PREFIX_RE = /^(\d+):/;
 let keyCache: Map<string, CryptoKey> | null = null;
 let activeKeyId: string | null = null;
 
+/** Clear cached keys so they're re-derived from env on next use. */
+export function resetKeyCache(): void {
+  keyCache = null;
+  activeKeyId = null;
+}
+
 function parseKeys(): Record<string, string> {
   const raw = env.ENCRYPTION_KEYS;
   if (!raw) throw new Error("ENCRYPTION_KEYS secret is not set");
@@ -53,7 +59,11 @@ export async function encrypt(plaintext: string): Promise<string> {
   combined.set(iv);
   combined.set(new Uint8Array(cipherBuf), iv.length);
 
-  return `${activeKeyId}:${btoa(String.fromCharCode(...combined))}`;
+  let binary = "";
+  for (let i = 0; i < combined.length; i++) {
+    binary += String.fromCharCode(combined[i]);
+  }
+  return `${activeKeyId}:${btoa(binary)}`;
 }
 
 export async function decrypt(value: string): Promise<string> {

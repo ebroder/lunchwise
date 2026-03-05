@@ -1,4 +1,4 @@
-import { useState, useEffect } from "preact/hooks";
+import { useState, useEffect, useCallback } from "preact/hooks";
 import { useLocation, useSearch, Link as WouterLink } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
 import {
@@ -104,10 +104,11 @@ export function LinkEdit({ params }: { params: { id: string } }) {
   const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
+    const controller = new AbortController();
     Promise.all([
-      api<SyncLink>(`/api/links/${linkId}`),
-      api<Group[]>("/api/splitwise/groups"),
-      api<Account[]>("/api/lunch-money/accounts"),
+      api<SyncLink>(`/api/links/${linkId}`, { signal: controller.signal }),
+      api<Group[]>("/api/splitwise/groups", { signal: controller.signal }),
+      api<Account[]>("/api/lunch-money/accounts", { signal: controller.signal }),
     ])
       .then(([l, g, a]) => {
         setLink(l);
@@ -121,9 +122,26 @@ export function LinkEdit({ params }: { params: { id: string } }) {
         setEnabled(l.enabled === 1);
       })
       .catch((err) => {
+        if (controller.signal.aborted) return;
         setError(err instanceof ApiError ? err.message : "Failed to load link");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [linkId]);
+
+  const runDryRun = useCallback(async () => {
+    setDryRunState("loading");
+    setDryRunError(null);
+    try {
+      const result = await api<DryRunResult>(`/api/links/${linkId}/dry-run`);
+      setDryRunData(result);
+      setDryRunState("done");
+    } catch (err) {
+      setDryRunError(err instanceof ApiError ? err.message : "Dry run failed");
+      setDryRunState("error");
+    }
   }, [linkId]);
 
   // Auto-run dry run if ?dry-run is in the URL
@@ -131,7 +149,7 @@ export function LinkEdit({ params }: { params: { id: string } }) {
     if (new URLSearchParams(search).has("dry-run") && !loading && link) {
       runDryRun();
     }
-  }, [search, loading, link]);
+  }, [search, loading, link, runDryRun]);
 
   async function handleSubmit(e: Event) {
     e.preventDefault();
@@ -173,19 +191,6 @@ export function LinkEdit({ params }: { params: { id: string } }) {
         type: "error",
         message: err instanceof ApiError ? err.message : "Failed to delete link",
       });
-    }
-  }
-
-  async function runDryRun() {
-    setDryRunState("loading");
-    setDryRunError(null);
-    try {
-      const result = await api<DryRunResult>(`/api/links/${linkId}/dry-run`);
-      setDryRunData(result);
-      setDryRunState("done");
-    } catch (err) {
-      setDryRunError(err instanceof ApiError ? err.message : "Dry run failed");
-      setDryRunState("error");
     }
   }
 

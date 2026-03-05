@@ -1,5 +1,6 @@
 import createClient from "openapi-fetch";
 import type { paths, components } from "./splitwise-api.js";
+import { describeError } from "./errors.js";
 
 export type SplitwiseExpense = components["schemas"]["expense"];
 export type SplitwiseShare = components["schemas"]["share"];
@@ -26,7 +27,7 @@ export async function getAllExpenses(
   let offset = 0;
 
   for (let page = 0; page < maxPages; page++) {
-    const { data, error } = await client.GET("/get_expenses", {
+    const { data, error, response } = await client.GET("/get_expenses", {
       params: {
         query: {
           group_id: params.group_id,
@@ -38,7 +39,7 @@ export async function getAllExpenses(
     });
 
     if (error) {
-      throw new Error(`Splitwise API error: ${JSON.stringify(error)}`);
+      throw new Error(`Splitwise API error (${response.status}): ${describeError(error)}`);
     }
 
     const expenses = data?.expenses ?? [];
@@ -64,10 +65,10 @@ export async function getAllExpenses(
 
 export async function getGroups(accessToken: string): Promise<SplitwiseGroup[]> {
   const client = createSplitwiseClient(accessToken);
-  const { data, error } = await client.GET("/get_groups");
+  const { data, error, response } = await client.GET("/get_groups");
 
   if (error) {
-    throw new Error(`Splitwise API error: ${JSON.stringify(error)}`);
+    throw new Error(`Splitwise API error (${response.status}): ${describeError(error)}`);
   }
 
   return data?.groups ?? [];
@@ -78,12 +79,12 @@ export async function getGroup(
   groupId: number,
 ): Promise<SplitwiseGroup | null> {
   const client = createSplitwiseClient(accessToken);
-  const { data, error } = await client.GET("/get_group/{id}", {
+  const { data, error, response } = await client.GET("/get_group/{id}", {
     params: { path: { id: groupId } },
   });
 
   if (error) {
-    throw new Error(`Splitwise API error: ${JSON.stringify(error)}`);
+    throw new Error(`Splitwise API error (${response.status}): ${describeError(error)}`);
   }
 
   return data?.group ?? null;

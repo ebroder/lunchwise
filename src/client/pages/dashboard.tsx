@@ -24,6 +24,7 @@ export function Dashboard() {
   const [apiKey, setApiKey] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const [syncingId, setSyncingId] = useState<number | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   useEffect(() => {
     api<{ hasLunchMoney: boolean }>("/api/me")
@@ -31,6 +32,9 @@ export function Dashboard() {
       .catch(() => setLmConnected(false));
     api<SyncLink[]>("/api/links")
       .then(setLinks)
+      .catch((err) => {
+        setFetchError(err instanceof ApiError ? err.message : "Failed to load links");
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -184,7 +188,9 @@ export function Dashboard() {
               </Link>
             </div>
 
-            {loading ? (
+            {fetchError ? (
+              <div class={alertError}>{fetchError}</div>
+            ) : loading ? (
               <p class="text-sm text-stone-500 dark:text-stone-400">Loading...</p>
             ) : links.length === 0 ? (
               <p class="text-sm text-stone-500 dark:text-stone-400">No links configured yet.</p>

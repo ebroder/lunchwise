@@ -1,26 +1,67 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
+import { eq } from "drizzle-orm";
 import * as userSchema from "./schema-user.js";
-import { syncedTransactions } from "./schema-user.js";
+import { syncedTransactions, syncLog, links } from "./schema-user.js";
 import { initUserDb, type UserDb } from "./db.js";
-import { syncLink } from "./sync.js";
-import { getUserShare, getAllExpenses, type SplitwiseExpense } from "./splitwise.js";
-import { getTransactions } from "./lunch-money.js";
+import { syncLink, syncBalances } from "./sync.js";
+import {
+  getUserShare,
+  getAllExpenses,
+  getGroups,
+  getGroup,
+  type SplitwiseExpense,
+  type SplitwiseGroup,
+} from "./splitwise.js";
+import {
+  getTransactions,
+  insertTransactions,
+  updateTransactions,
+  getUser,
+  updateAccountBalance,
+} from "./lunch-money.js";
+import { convertCurrency, type ExchangeRates } from "./exchange-rates.js";
 import type { User } from "./auth.js";
 
 vi.mock("./splitwise.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./splitwise.js")>();
-  return { ...mod, getAllExpenses: vi.fn().mockResolvedValue([]) };
+  return {
+    ...mod,
+    getAllExpenses: vi.fn().mockResolvedValue([]),
+    getGroups: vi.fn().mockResolvedValue([]),
+    getGroup: vi.fn().mockResolvedValue(null),
+  };
 });
 
 vi.mock("./lunch-money.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./lunch-money.js")>();
-  return { ...mod, getTransactions: vi.fn().mockResolvedValue([]) };
+  return {
+    ...mod,
+    getTransactions: vi.fn().mockResolvedValue([]),
+    insertTransactions: vi.fn().mockResolvedValue({ transactions: [], skippedDuplicates: [] }),
+    updateTransactions: vi.fn().mockResolvedValue(void 0),
+    getUser: vi.fn().mockResolvedValue({ primary_currency: "usd" }),
+    updateAccountBalance: vi.fn().mockResolvedValue(void 0),
+  };
+});
+
+vi.mock("./exchange-rates.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./exchange-rates.js")>();
+  return {
+    ...mod,
+    getExchangeRates: vi.fn().mockResolvedValue({ USD: 1, EUR: 0.85 }),
+  };
 });
 
 const mockGetAllExpenses = getAllExpenses as Mock;
 const mockGetTransactions = getTransactions as Mock;
+const mockInsertTransactions = insertTransactions as Mock;
+const mockUpdateTransactions = updateTransactions as Mock;
+const mockGetGroups = getGroups as Mock;
+const mockGetGroup = getGroup as Mock;
+const mockGetUser = getUser as Mock;
+const mockUpdateAccountBalance = updateAccountBalance as Mock;
 
 // --- Helpers ---
 
@@ -42,6 +83,24 @@ function makeExpense(overrides: Partial<SplitwiseExpense> = {}): SplitwiseExpens
     users: [{ user_id: 123, net_balance: "-10.00" }],
     ...overrides,
   } as SplitwiseExpense;
+}
+
+function makeLink(
+  overrides: Partial<typeof userSchema.links.$inferSelect> = {},
+): typeof userSchema.links.$inferSelect {
+  return {
+    id: 1,
+    splitwiseGroupId: "10",
+    lmAccountId: 100,
+    startDate: null,
+    includePayments: 0,
+    enabled: 1,
+    syncBalance: 1,
+    lastSyncedAt: null,
+    createdAt: "",
+    updatedAt: "",
+    ...overrides,
+  };
 }
 
 const defaultUser: User = {
@@ -382,5 +441,323 @@ describe("syncLink dry run", () => {
 
       expect(result.created).toBe(1);
     });
+  });
+});
+
+// --- syncLink execute path ---
+
+describe("syncLink execute", () => {
+  let db: UserDb;
+
+  type LinkInsert = typeof userSchema.links.$inferInsert;
+
+  async function insertLink(
+    overrides: Partial<LinkInsert> = {},
+  ): Promise<typeof userSchema.links.$inferSelect> {
+    const [row] = await db
+      .insert(userSchema.links)
+      .values({
+        lmAccountId: 100,
+        lastSyncedAt: "2024-01-01T00:00:00Z",
+        ...overrides,
+      })
+      .returning();
+    return row;
+  }
+
+  beforeEach(async () => {
+    db = createTestDb();
+    await initUserDb(db);
+    mockGetAllExpenses.mockReset().mockResolvedValue([]);
+    mockGetTransactions.mockReset().mockResolvedValue([]);
+    mockInsertTransactions
+      .mockReset()
+      .mockResolvedValue({ transactions: [], skippedDuplicates: [] });
+    mockUpdateTransactions.mockReset().mockResolvedValue(void 0);
+  });
+
+  it("creates sync_log with status=success on successful sync", async () => {
+    const link = await insertLink();
+    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+    mockInsertTransactions.mockResolvedValue({
+      transactions: [{ id: 9001, external_id: "1001" }],
+      skippedDuplicates: [],
+    });
+
+    const result = await syncLink(db, link, defaultUser);
+
+    expect(result.created).toBe(1);
+
+    const logs = await db.select().from(syncLog).where(eq(syncLog.linkId, link.id));
+    expect(logs).toHaveLength(1);
+    expect(logs[0].status).toBe("success");
+    expect(logs[0].created).toBe(1);
+    expect(logs[0].finishedAt).toBeTruthy();
+  });
+
+  it("records status=error with message when execute fails", async () => {
+    const link = await insertLink();
+    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+    mockInsertTransactions.mockRejectedValue(new Error("LM API down"));
+
+    await expect(syncLink(db, link, defaultUser)).rejects.toThrow("LM API down");
+
+    const logs = await db.select().from(syncLog).where(eq(syncLog.linkId, link.id));
+    expect(logs).toHaveLength(1);
+    expect(logs[0].status).toBe("error");
+    expect(logs[0].errorMessage).toContain("LM API down");
+  });
+
+  it("updates lastSyncedAt cursor on success", async () => {
+    const link = await insertLink();
+    mockGetAllExpenses.mockResolvedValue([]);
+
+    await syncLink(db, link, defaultUser);
+
+    const [updated] = await db.select().from(links).where(eq(links.id, link.id));
+    expect(updated.lastSyncedAt).toBeTruthy();
+    expect(updated.lastSyncedAt).not.toBe(link.lastSyncedAt);
+  });
+
+  it("writes tracking rows to synced_transactions for created expenses", async () => {
+    const link = await insertLink();
+    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 2001 }), makeExpense({ id: 2002 })]);
+    mockInsertTransactions.mockResolvedValue({
+      transactions: [
+        { id: 9001, external_id: "2001" },
+        { id: 9002, external_id: "2002" },
+      ],
+      skippedDuplicates: [],
+    });
+
+    await syncLink(db, link, defaultUser);
+
+    const tracked = await db
+      .select()
+      .from(syncedTransactions)
+      .where(eq(syncedTransactions.linkId, link.id));
+    expect(tracked).toHaveLength(2);
+    const expenseIds = tracked.map((t) => t.splitwiseExpenseId).sort();
+    expect(expenseIds).toEqual(["2001", "2002"]);
+  });
+});
+
+// --- syncBalances ---
+
+describe("syncBalances", () => {
+  const rates: ExchangeRates = { USD: 1, EUR: 0.85, GBP: 0.73 };
+
+  function makeGroup(id: number, balances: { currency: string; amount: string }[]): SplitwiseGroup {
+    return {
+      id,
+      members: [
+        {
+          id: 123,
+          balance: balances.map((b) => ({
+            currency_code: b.currency,
+            amount: b.amount,
+          })),
+        },
+      ],
+    } as SplitwiseGroup;
+  }
+
+  const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), with: vi.fn() };
+
+  beforeEach(() => {
+    mockGetUser.mockReset().mockResolvedValue({ primary_currency: "usd" });
+    mockUpdateAccountBalance.mockReset().mockResolvedValue(void 0);
+    mockGetGroup.mockReset().mockResolvedValue(null);
+    mockGetGroups.mockReset().mockResolvedValue([]);
+    log.debug.mockClear();
+    log.info.mockClear();
+    log.warn.mockClear();
+    log.error.mockClear();
+  });
+
+  it("syncs a single group, single currency balance", async () => {
+    const link = makeLink({ splitwiseGroupId: "10" });
+    mockGetGroup.mockResolvedValue(makeGroup(10, [{ currency: "USD", amount: "25.50" }]));
+
+    await syncBalances([link], defaultUser, rates, log);
+
+    expect(mockUpdateAccountBalance).toHaveBeenCalledWith("lm-key", 100, 25.5);
+  });
+
+  it("converts and sums multi-currency balances", async () => {
+    const link = makeLink({ splitwiseGroupId: "10" });
+    // 10 EUR + 20 USD. EUR->USD: 10 / 0.85 * 1 = 11.7647...
+    mockGetGroup.mockResolvedValue(
+      makeGroup(10, [
+        { currency: "EUR", amount: "10.00" },
+        { currency: "USD", amount: "20.00" },
+      ]),
+    );
+
+    await syncBalances([link], defaultUser, rates, log);
+
+    const balance = mockUpdateAccountBalance.mock.calls[0][2] as number;
+    // 10 / 0.85 + 20 = 31.7647...
+    expect(balance).toBeCloseTo(convertCurrency(10, "EUR", "USD", rates) + 20, 3);
+  });
+
+  it("deduplicates group IDs across multiple links", async () => {
+    // Two links both covering group 10 (one specific, one all-groups)
+    const link1 = makeLink({ id: 1, splitwiseGroupId: "10", lmAccountId: 100 });
+    const link2 = makeLink({ id: 2, splitwiseGroupId: null, lmAccountId: 100 });
+    const group = makeGroup(10, [{ currency: "USD", amount: "50.00" }]);
+
+    mockGetGroup.mockResolvedValue(group);
+    mockGetGroups.mockResolvedValue([group]);
+
+    await syncBalances([link1, link2], defaultUser, rates, log);
+
+    // Should only count group 10 once, not twice
+    expect(mockUpdateAccountBalance).toHaveBeenCalledTimes(1);
+    expect(mockUpdateAccountBalance).toHaveBeenCalledWith("lm-key", 100, 50);
+  });
+
+  it("isolates per-account errors", async () => {
+    const link1 = makeLink({ id: 1, splitwiseGroupId: "10", lmAccountId: 100 });
+    const link2 = makeLink({ id: 2, splitwiseGroupId: "20", lmAccountId: 200 });
+
+    mockGetGroup.mockImplementation((_token: string, groupId: number) => {
+      if (groupId === 10) throw new Error("API error");
+      return makeGroup(20, [{ currency: "USD", amount: "30.00" }]);
+    });
+
+    await syncBalances([link1, link2], defaultUser, rates, log);
+
+    // Account 100 failed, but account 200 should still sync
+    expect(mockUpdateAccountBalance).toHaveBeenCalledTimes(1);
+    expect(mockUpdateAccountBalance).toHaveBeenCalledWith("lm-key", 200, 30);
+    expect(log.error).toHaveBeenCalled();
+  });
+
+  it("skips links with syncBalance=0", async () => {
+    const link = makeLink({ syncBalance: 0 });
+
+    await syncBalances([link], defaultUser, rates, log);
+
+    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(mockUpdateAccountBalance).not.toHaveBeenCalled();
+  });
+});
+
+// These tests validate that the raw SQL strings in executeActions() and api.tsx
+// match the actual schema created by initUserDb(). If a column is renamed in
+// the Drizzle schema, these fail with "no such column" at CI time.
+describe("raw SQL schema consistency", () => {
+  let db: UserDb;
+
+  beforeEach(async () => {
+    db = createTestDb();
+    await initUserDb(db);
+    // Insert prerequisite rows for FK constraints
+    await db.insert(userSchema.credentials).values({
+      splitwiseAccessToken: "tok",
+    });
+    await db.insert(links).values({
+      lmAccountId: 100,
+    });
+  });
+
+  it("INSERT into synced_transactions matches schema", async () => {
+    const client = db.$client;
+    await client.execute({
+      sql: "INSERT INTO synced_transactions (link_id, splitwise_expense_id, lm_transaction_id, splitwise_updated_at) VALUES (?, ?, ?, ?)",
+      args: [1, "exp_1", 999, "2024-01-01T00:00:00Z"],
+    });
+    const rows = await db.select().from(syncedTransactions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].splitwiseExpenseId).toBe("exp_1");
+  });
+
+  it("UPDATE synced_transactions (update pattern) matches schema", async () => {
+    await db.insert(syncedTransactions).values({
+      linkId: 1,
+      splitwiseExpenseId: "exp_1",
+      lmTransactionId: 999,
+      splitwiseUpdatedAt: "2024-01-01T00:00:00Z",
+    });
+    const client = db.$client;
+    await client.execute({
+      sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, is_deleted = 0, updated_at = datetime('now') WHERE id = ?",
+      args: ["2024-02-01T00:00:00Z", 1],
+    });
+    const rows = await db.select().from(syncedTransactions).where(eq(syncedTransactions.id, 1));
+    expect(rows[0].splitwiseUpdatedAt).toBe("2024-02-01T00:00:00Z");
+  });
+
+  it("UPDATE synced_transactions (delete pattern) matches schema", async () => {
+    await db.insert(syncedTransactions).values({
+      linkId: 1,
+      splitwiseExpenseId: "exp_1",
+      lmTransactionId: 999,
+      splitwiseUpdatedAt: "2024-01-01T00:00:00Z",
+    });
+    const client = db.$client;
+    await client.execute({
+      sql: "UPDATE synced_transactions SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?",
+      args: [1],
+    });
+    const rows = await db.select().from(syncedTransactions).where(eq(syncedTransactions.id, 1));
+    expect(rows[0].isDeleted).toBe(1);
+  });
+
+  it("UPDATE synced_transactions (stamp pattern) matches schema", async () => {
+    await db.insert(syncedTransactions).values({
+      linkId: 1,
+      splitwiseExpenseId: "exp_1",
+      lmTransactionId: 999,
+      splitwiseUpdatedAt: "2024-01-01T00:00:00Z",
+    });
+    const client = db.$client;
+    await client.execute({
+      sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, updated_at = datetime('now') WHERE id = ?",
+      args: ["2024-03-01T00:00:00Z", 1],
+    });
+    const rows = await db.select().from(syncedTransactions).where(eq(syncedTransactions.id, 1));
+    expect(rows[0].splitwiseUpdatedAt).toBe("2024-03-01T00:00:00Z");
+  });
+
+  it("DELETE FROM synced_transactions WHERE link_id matches schema", async () => {
+    await db.insert(syncedTransactions).values({
+      linkId: 1,
+      splitwiseExpenseId: "exp_1",
+      lmTransactionId: 999,
+      splitwiseUpdatedAt: "2024-01-01T00:00:00Z",
+    });
+    const client = db.$client;
+    await client.execute({
+      sql: "DELETE FROM synced_transactions WHERE link_id = ?",
+      args: [1],
+    });
+    const rows = await db.select().from(syncedTransactions);
+    expect(rows).toHaveLength(0);
+  });
+
+  it("DELETE FROM sync_log WHERE link_id matches schema", async () => {
+    await db.insert(syncLog).values({
+      linkId: 1,
+      startedAt: "2024-01-01T00:00:00Z",
+    });
+    const client = db.$client;
+    await client.execute({
+      sql: "DELETE FROM sync_log WHERE link_id = ?",
+      args: [1],
+    });
+    const rows = await db.select().from(syncLog);
+    expect(rows).toHaveLength(0);
+  });
+
+  it("DELETE FROM links WHERE id matches schema", async () => {
+    const client = db.$client;
+    await client.execute({
+      sql: "DELETE FROM links WHERE id = ?",
+      args: [1],
+    });
+    const rows = await db.select().from(links);
+    expect(rows).toHaveLength(0);
   });
 });

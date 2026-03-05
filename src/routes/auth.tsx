@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { eq } from "drizzle-orm";
-import { createSession, clearSession } from "../lib/auth.js";
+import { createSession, clearSession, markDbInitialized } from "../lib/auth.js";
 import { getSharedDb, getUserDb, initUserDb } from "../lib/db.js";
 import { users } from "../lib/schema-shared.js";
 import { credentials } from "../lib/schema-user.js";
@@ -10,6 +10,7 @@ import { createTursoDatabase } from "../lib/turso.js";
 import { env } from "../lib/env.js";
 import { encrypt } from "../lib/crypto.js";
 import { createLogger } from "../lib/logger.js";
+import { describeError } from "../lib/errors.js";
 
 const auth = new Hono();
 
@@ -65,8 +66,11 @@ auth.get("/splitwise/callback", async (c) => {
       const body = await tokenRes.text();
       throw new Error(`Splitwise token exchange failed (${tokenRes.status}): ${body}`);
     }
-    const tokenData: { access_token: string } = await tokenRes.json();
+    const tokenData = (await tokenRes.json()) as { access_token?: unknown };
     const accessToken = tokenData.access_token;
+    if (typeof accessToken !== "string") {
+      return c.text("Splitwise token exchange returned no access token", 400);
+    }
 
     // Fetch the current Splitwise user
     const sw = createSplitwiseClient(accessToken);
@@ -102,13 +106,16 @@ auth.get("/splitwise/callback", async (c) => {
 
       const userDb = getUserDb(newDbUrl);
       await initUserDb(userDb);
+      markDbInitialized(newDbUrl);
 
       await userDb.insert(credentials).values({
         splitwiseAccessToken: await encrypt(accessToken),
       });
     } else {
-      // Returning user: update access token in per-user DB
+      // Returning user: run any pending migrations, then update access token
       const userDb = getUserDb(tursoDbUrl);
+      await initUserDb(userDb);
+      markDbInitialized(tursoDbUrl);
       await userDb
         .update(credentials)
         .set({
@@ -123,7 +130,8 @@ auth.get("/splitwise/callback", async (c) => {
   } catch (err) {
     const log = createLogger({ source: "oauth" });
     log.error("OAuth callback failed", {
-      error: err instanceof Error ? err.message : String(err),
+      error: describeError(err),
+      cause: err,
     });
     return c.text("Internal server error", 500);
   }

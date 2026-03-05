@@ -33,6 +33,17 @@ export async function createTursoDatabase(name: string): Promise<string> {
     throw new Error(`Turso Platform API error (${res.status}): ${body}`);
   }
 
-  const data: CreateDatabaseResponse = await res.json();
-  return `libsql://${data.database.Hostname}`;
+  let data: CreateDatabaseResponse;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(`Turso Platform API returned invalid JSON (${res.status})`);
+  }
+
+  const hostname = data.database?.Hostname;
+  if (!hostname) {
+    throw new Error(`Turso Platform API response missing database.Hostname`);
+  }
+
+  return `libsql://${hostname}`;
 }

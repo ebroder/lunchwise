@@ -44,7 +44,7 @@ src/
     env.ts           Shared env bindings
     db.ts            Turso/Drizzle client management, LRU cache for user DBs
     auth.ts          JWT sessions (jose), requireAuth + requireAuthJson
-    logger.ts        Structured JSON logger (no deps, LOG_LEVEL via env)
+    logger.ts        Structured JSON logger (@sentry/cloudflare, LOG_LEVEL via env)
     turso.ts         Turso Platform API (creating per-user databases)
     sync.ts          Core sync logic (Splitwise -> Lunch Money, balance sync)
     exchange-rates.ts Cached exchange rates (open.er-api.com, shared DB)
@@ -142,3 +142,12 @@ API errors, and the cron handler emit structured logs with context fields
   to be applied manually via `turso db shell`.
 - `initUserDb()` runs on auth and cron (not just signup) so existing users
   pick up new migrations. Deduplicated per isolate with a `Set<string>`.
+- Cloudflare Workers have a **1000 subrequest limit** per invocation. Each
+  `db.$client.batch()` call counts as one subrequest to Turso regardless of
+  how many SQL statements it contains. This is why `executeActions` in
+  `sync.ts` batches all DB writes into a single batch at the end rather than
+  writing incrementally after each phase (creates, updates, deletes). If a
+  later phase fails, earlier phases' LM changes are orphaned, but the next
+  sync self-heals via duplicate `external_id` handling.
+- Lunch Money's insert and update APIs accept a maximum of 500 transactions
+  per request. The client functions in `lunch-money.ts` chunk automatically.
