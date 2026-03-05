@@ -36,6 +36,7 @@ api.use("*", async (c, next) => {
 
 function parseLinkId(c: Context, param = "id") {
   const raw = c.req.param(param);
+  if (!raw) return null;
   const id = parseInt(raw, 10);
   if (!Number.isFinite(id) || id <= 0) return null;
   return id;
