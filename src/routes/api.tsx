@@ -276,13 +276,13 @@ api.get("/links/:id/history", async (c) => {
   const linkId = parseLinkId(c);
   if (!linkId) return c.json({ error: "Invalid ID" }, 400);
   const db = c.get("db");
-  const logs = await db
+  const rows = await db
     .select()
     .from(syncLog)
     .where(eq(syncLog.linkId, linkId))
     .orderBy(desc(syncLog.startedAt))
-    .limit(50);
-  return c.json(logs);
+    .limit(51);
+  return c.json({ logs: rows.slice(0, 50), hasMore: rows.length > 50 });
 });
 
 // --- Dry Run ---
