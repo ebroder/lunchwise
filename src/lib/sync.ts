@@ -14,13 +14,16 @@ import {
   insertTransactions,
   updateTransactions,
   getTransactions,
+  getCategories,
   getUser,
   updateAccountBalance,
   type LmInsertTransaction,
+  type LmCategory,
 } from "./lunch-money.js";
 import { getExchangeRates, convertCurrency, type ExchangeRates } from "./exchange-rates.js";
 import type { User } from "./auth.js";
 import { decrypt } from "./crypto.js";
+import { stemmer } from "stemmer";
 import { createLogger } from "./logger.js";
 import { describeError } from "./errors.js";
 
@@ -45,6 +48,7 @@ export interface PlannedAction {
     external_id: string;
     notes: string;
     status: "unreviewed" | "reviewed";
+    category_id?: number;
   };
   // Present for update/delete (the existing LM transaction to modify)
   tracked?: TrackedRow;
@@ -60,6 +64,66 @@ export interface SyncResult {
 
 interface SyncOptions {
   dryRun?: boolean;
+}
+
+// Stem all words in a string and return as a sorted set for comparison
+function stemWords(text: string): string[] {
+  return [
+    ...new Set(
+      text
+        .toLowerCase()
+        .split(/\W+/)
+        .filter((w) => w.length > 0)
+        .map((w) => stemmer(w)),
+    ),
+  ].sort();
+}
+
+// Build a map from stemmed category names to LM category IDs.
+// Skips category groups (which can't be assigned to transactions).
+// If multiple LM categories produce the same stemmed key, the key is
+// removed to avoid ambiguous matches.
+function buildCategoryMap(categories: LmCategory[]): Map<string, number> {
+  const map = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  for (const cat of categories) {
+    if (cat.is_group) continue;
+    const key = stemWords(cat.name).join(" ");
+    if (map.has(key) && map.get(key) !== cat.id) {
+      ambiguous.add(key);
+    } else {
+      map.set(key, cat.id);
+    }
+  }
+  for (const key of ambiguous) map.delete(key);
+  return map;
+}
+
+// Match a Splitwise category name to a LM category ID.
+// Tries exact stemmed match first, then substring (one stemmed set
+// contains all words of the other).
+function matchCategory(
+  swCategoryName: string | undefined,
+  categoryMap: Map<string, number>,
+): number | undefined {
+  if (!swCategoryName) return undefined;
+  const swStems = stemWords(swCategoryName);
+  if (swStems.length === 0) return undefined;
+  const swKey = swStems.join(" ");
+
+  // Exact stemmed match
+  if (categoryMap.has(swKey)) return categoryMap.get(swKey);
+
+  // Substring: SW stems are a subset of LM stems, or vice versa
+  const matches: number[] = [];
+  for (const [lmKey, lmId] of categoryMap) {
+    const lmStems = lmKey.split(" ");
+    if (swStems.every((s) => lmStems.includes(s)) || lmStems.every((s) => swStems.includes(s))) {
+      matches.push(lmId);
+    }
+  }
+  if (matches.length === 1) return matches[0];
+  return undefined;
 }
 
 function buildNotes(expense: SplitwiseExpense, userAmount: number): string {
@@ -176,6 +240,10 @@ async function planSync(
 
   const { tracked, backfilledAmounts } = await buildTrackedMap(db, link, apiKey, dryRun, log);
 
+  // Build category map for matching Splitwise categories to LM categories
+  const lmCategories = await getCategories(apiKey);
+  const categoryMap = buildCategoryMap(lmCategories);
+
   // Subtract 2 minutes from lastSyncedAt to cover expenses updated during the
   // previous fetch window (TOCTOU). Re-fetching overlapping expenses is safe
   // because the planner skips already-synced ones (matching splitwiseUpdatedAt).
@@ -261,7 +329,7 @@ async function planSync(
       ? `Splitwise Payment: ${expense.description}`
       : (expense.description ?? "");
 
-    const lmData = {
+    const lmData: PlannedAction["lmData"] = {
       date: (expense.date ?? "").split("T")[0],
       amount,
       payee,
@@ -273,7 +341,9 @@ async function planSync(
     };
 
     if (!existing) {
-      log.debug("Plan create", { expenseId: eid, payee, amount });
+      const categoryId = matchCategory(expense.category?.name, categoryMap);
+      if (categoryId) lmData.category_id = categoryId;
+      log.debug("Plan create", { expenseId: eid, payee, amount, categoryId });
       actions.push({
         type: "create",
         expenseId: eid,

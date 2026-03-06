@@ -18,6 +18,7 @@ import {
   getTransactions,
   insertTransactions,
   updateTransactions,
+  getCategories,
   getUser,
   updateAccountBalance,
 } from "./lunch-money.js";
@@ -41,6 +42,7 @@ vi.mock("./lunch-money.js", async (importOriginal) => {
     getTransactions: vi.fn().mockResolvedValue([]),
     insertTransactions: vi.fn().mockResolvedValue({ transactions: [], skippedDuplicates: [] }),
     updateTransactions: vi.fn().mockResolvedValue(void 0),
+    getCategories: vi.fn().mockResolvedValue([]),
     getUser: vi.fn().mockResolvedValue({ primary_currency: "usd" }),
     updateAccountBalance: vi.fn().mockResolvedValue(void 0),
   };
@@ -58,6 +60,7 @@ const mockGetAllExpenses = getAllExpenses as Mock;
 const mockGetTransactions = getTransactions as Mock;
 const mockInsertTransactions = insertTransactions as Mock;
 const mockUpdateTransactions = updateTransactions as Mock;
+const mockGetCategories = getCategories as Mock;
 const mockGetGroups = getGroups as Mock;
 const mockGetGroup = getGroup as Mock;
 const mockGetUser = getUser as Mock;
@@ -169,6 +172,7 @@ describe("syncLink dry run", () => {
     await initUserDb(db);
     mockGetAllExpenses.mockReset().mockResolvedValue([]);
     mockGetTransactions.mockReset().mockResolvedValue([]);
+    mockGetCategories.mockReset().mockResolvedValue([]);
   });
 
   it("creates a transaction for a new expense", async () => {
@@ -349,6 +353,80 @@ describe("syncLink dry run", () => {
     expect(result.actions![0].lmData.notes).toContain("Groceries");
   });
 
+  it("sets category_id when Splitwise category matches LM category by name", async () => {
+    const link = await insertLink();
+    mockGetCategories.mockResolvedValue([
+      { id: 42, name: "Groceries", is_group: false },
+      { id: 43, name: "Rent", is_group: false },
+    ]);
+    mockGetAllExpenses.mockResolvedValue([
+      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
+    ]);
+
+    const result = await syncLink(db, link, defaultUser, { dryRun: true });
+
+    expect(result.actions![0].lmData.category_id).toBe(42);
+  });
+
+  it("matches category via stemming (plural to singular)", async () => {
+    const link = await insertLink();
+    mockGetCategories.mockResolvedValue([{ id: 42, name: "Grocery", is_group: false }]);
+    mockGetAllExpenses.mockResolvedValue([
+      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
+    ]);
+
+    const result = await syncLink(db, link, defaultUser, { dryRun: true });
+
+    expect(result.actions![0].lmData.category_id).toBe(42);
+  });
+
+  it("does not set category_id when no LM category matches", async () => {
+    const link = await insertLink();
+    mockGetCategories.mockResolvedValue([{ id: 42, name: "Entertainment", is_group: false }]);
+    mockGetAllExpenses.mockResolvedValue([
+      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
+    ]);
+
+    const result = await syncLink(db, link, defaultUser, { dryRun: true });
+
+    expect(result.actions![0].lmData.category_id).toBeUndefined();
+  });
+
+  it("skips category groups when matching", async () => {
+    const link = await insertLink();
+    mockGetCategories.mockResolvedValue([{ id: 42, name: "Groceries", is_group: true }]);
+    mockGetAllExpenses.mockResolvedValue([
+      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
+    ]);
+
+    const result = await syncLink(db, link, defaultUser, { dryRun: true });
+
+    expect(result.actions![0].lmData.category_id).toBeUndefined();
+  });
+
+  it("does not set category_id on updates", async () => {
+    const link = await insertLink();
+    await db.insert(syncedTransactions).values({
+      linkId: link.id,
+      splitwiseExpenseId: "1001",
+      lmTransactionId: 5000,
+      splitwiseUpdatedAt: "2024-06-15T12:00:00Z",
+    });
+    mockGetCategories.mockResolvedValue([{ id: 42, name: "Groceries", is_group: false }]);
+    mockGetAllExpenses.mockResolvedValue([
+      makeExpense({
+        id: 1001,
+        updated_at: "2024-06-16T08:00:00Z",
+        category: { id: 5, name: "Groceries" },
+      }),
+    ]);
+
+    const result = await syncLink(db, link, defaultUser, { dryRun: true });
+
+    expect(result.actions![0].type).toBe("update");
+    expect(result.actions![0].lmData.category_id).toBeUndefined();
+  });
+
   it("includes total in notes when user share differs from total", async () => {
     const link = await insertLink();
     mockGetAllExpenses.mockResolvedValue([
@@ -474,6 +552,7 @@ describe("syncLink execute", () => {
       .mockReset()
       .mockResolvedValue({ transactions: [], skippedDuplicates: [] });
     mockUpdateTransactions.mockReset().mockResolvedValue(void 0);
+    mockGetCategories.mockReset().mockResolvedValue([]);
   });
 
   it("creates sync_log with status=success on successful sync", async () => {

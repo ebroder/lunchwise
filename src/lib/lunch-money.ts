@@ -4,6 +4,7 @@ import { describeError } from "./errors.js";
 
 export type LmTransaction = components["schemas"]["transactionObject"];
 export type LmManualAccount = components["schemas"]["manualAccountObject"];
+export type LmCategory = components["schemas"]["categoryObject"];
 export type LmInsertTransaction = components["schemas"]["insertTransactionObject"];
 export type LmSkippedDuplicate = components["schemas"]["skippedExistingExternalIdObject"];
 export type LmUser = components["schemas"]["userObject"];
@@ -29,6 +30,7 @@ export async function insertTransactions(
     const { data, error, response } = await client.POST("/transactions", {
       body: {
         transactions: transactions.slice(i, i + LM_BATCH),
+        apply_rules: true,
         skip_duplicates: false,
         skip_balance_update: true,
       },
@@ -147,6 +149,19 @@ export async function getUser(apiKey: string): Promise<LmUser> {
   }
 
   return data;
+}
+
+export async function getCategories(apiKey: string): Promise<LmCategory[]> {
+  const client = createLunchMoneyClient(apiKey);
+  const { data, error, response } = await client.GET("/categories", {
+    params: { query: { format: "flattened" } },
+  });
+
+  if (error) {
+    throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+  }
+
+  return data.categories ?? [];
 }
 
 export async function updateAccountBalance(
