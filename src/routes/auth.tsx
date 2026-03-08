@@ -22,7 +22,7 @@ auth.get("/splitwise", (c) => {
   const state = crypto.randomUUID();
   const url = new URL(AUTHORIZE_URL);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", env.SPLITWISE_CLIENT_ID!);
+  url.searchParams.set("client_id", env.SPLITWISE_CLIENT_ID);
   url.searchParams.set("redirect_uri", `${appUrl}/auth/splitwise/callback`);
   url.searchParams.set("state", state);
 
@@ -58,8 +58,8 @@ auth.get("/splitwise/callback", async (c) => {
         grant_type: "authorization_code",
         code,
         redirect_uri: `${appUrl}/auth/splitwise/callback`,
-        client_id: env.SPLITWISE_CLIENT_ID!,
-        client_secret: env.SPLITWISE_CLIENT_SECRET!,
+        client_id: env.SPLITWISE_CLIENT_ID,
+        client_secret: env.SPLITWISE_CLIENT_SECRET,
       }),
     });
     if (!tokenRes.ok) {

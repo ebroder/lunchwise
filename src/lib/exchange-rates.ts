@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import type { SharedDb } from "./db.js";
+import { createLogger } from "./logger.js";
 
 const EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD";
 
@@ -56,8 +57,9 @@ export async function getExchangeRates(shared: SharedDb): Promise<ExchangeRates>
   if (row && nowUnix < row.next_update_at) {
     try {
       return JSON.parse(row.rates_json) as ExchangeRates;
-    } catch {
-      // Corrupted cache; fall through to API fetch
+    } catch (err) {
+      const log = createLogger({ source: "exchange-rates" });
+      log.error("Corrupted exchange rate cache, refetching from API", { cause: err });
     }
   }
 
@@ -79,8 +81,9 @@ export async function getExchangeRates(shared: SharedDb): Promise<ExchangeRates>
     if (row) {
       try {
         return JSON.parse(row.rates_json) as ExchangeRates;
-      } catch {
-        // Corrupted cache and API down; throw the API error
+      } catch (parseErr) {
+        const log = createLogger({ source: "exchange-rates" });
+        log.error("Exchange rate API down and cached data corrupted", { cause: parseErr });
       }
     }
     throw err;

@@ -10,6 +10,9 @@ function setEnv(overrides: Record<string, string | undefined> = {}) {
     SPLITWISE_CLIENT_SECRET: "client-secret",
     APP_URL: "https://example.com",
     ENCRYPTION_KEYS: JSON.stringify({ "1": "dGVzdGtleXRlc3RrZXkxMjM0NTY3ODk=" }),
+    TURSO_PLATFORM_API_TOKEN: "platform-token",
+    TURSO_ORG: "test-org",
+    TURSO_GROUP: "test-group",
   };
   // Clear env
   for (const key of Object.keys(env)) {
@@ -43,13 +46,11 @@ describe("validateEnv", () => {
 
   it("throws in production when a required var is missing", () => {
     setEnv({ NODE_ENV: "production", TURSO_SHARED_DB_URL: undefined });
-    delete env.TURSO_SHARED_DB_URL;
     expect(() => validateEnv()).toThrow("TURSO_SHARED_DB_URL is not set");
   });
 
   it("logs warnings in dev when a required var is missing", () => {
     setEnv({ NODE_ENV: "development", TURSO_SHARED_DB_URL: undefined });
-    delete env.TURSO_SHARED_DB_URL;
     validateEnv();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("TURSO_SHARED_DB_URL is not set"));
   });

@@ -31,8 +31,7 @@ type Link = typeof links.$inferSelect;
 
 type TrackedRow = typeof syncedTransactions.$inferSelect;
 
-export interface PlannedAction {
-  type: "create" | "update" | "delete";
+interface ActionBase {
   expenseId: string;
   date: string;
   payee: string;
@@ -50,9 +49,23 @@ export interface PlannedAction {
     status: "unreviewed" | "reviewed";
     category_id?: number;
   };
-  // Present for update/delete (the existing LM transaction to modify)
-  tracked?: TrackedRow;
 }
+
+interface PlannedCreate extends ActionBase {
+  type: "create";
+}
+
+interface PlannedUpdate extends ActionBase {
+  type: "update";
+  tracked: TrackedRow;
+}
+
+interface PlannedDelete extends ActionBase {
+  type: "delete";
+  tracked: TrackedRow;
+}
+
+export type PlannedAction = PlannedCreate | PlannedUpdate | PlannedDelete;
 
 export interface SyncResult {
   expenses_fetched: number;
@@ -221,6 +234,27 @@ async function buildTrackedMap(
   return { tracked, backfilledAmounts };
 }
 
+function planUpdate(
+  eid: string,
+  expense: SplitwiseExpense,
+  lmData: ActionBase["lmData"],
+  payee: string,
+  amount: number,
+  existing: TrackedRow,
+): PlannedUpdate {
+  return {
+    type: "update",
+    expenseId: eid,
+    date: lmData.date,
+    payee,
+    amount,
+    currency: expense.currency_code ?? "USD",
+    splitwiseUpdatedAt: expense.updated_at ?? "",
+    lmData,
+    tracked: existing,
+  };
+}
+
 // Phase 1: Plan what actions the sync would take. Pure decision logic,
 // no side effects to LM or the local DB.
 async function planSync(
@@ -370,31 +404,11 @@ async function planSync(
             lmAmount,
             swAmount: amount,
           });
-          actions.push({
-            type: "update",
-            expenseId: eid,
-            date: lmData.date,
-            payee,
-            amount,
-            currency: expense.currency_code ?? "USD",
-            splitwiseUpdatedAt: expense.updated_at ?? "",
-            lmData,
-            tracked: existing,
-          });
+          actions.push(planUpdate(eid, expense, lmData, payee, amount, existing));
         }
       } else {
         log.debug("Plan update", { expenseId: eid, payee, amount });
-        actions.push({
-          type: "update",
-          expenseId: eid,
-          date: lmData.date,
-          payee,
-          amount,
-          currency: expense.currency_code ?? "USD",
-          splitwiseUpdatedAt: expense.updated_at ?? "",
-          lmData,
-          tracked: existing,
-        });
+        actions.push(planUpdate(eid, expense, lmData, payee, amount, existing));
       }
     } else {
       skips.current++;
@@ -421,9 +435,9 @@ async function executeActions(
   actions: PlannedAction[],
   log: ReturnType<typeof createLogger>,
 ): Promise<{ created: number; updated: number; deleted: number }> {
-  const creates = actions.filter((a) => a.type === "create");
-  const updates = actions.filter((a) => a.type === "update");
-  const deletes = actions.filter((a) => a.type === "delete");
+  const creates = actions.filter((a): a is PlannedCreate => a.type === "create");
+  const updates = actions.filter((a): a is PlannedUpdate => a.type === "update");
+  const deletes = actions.filter((a): a is PlannedDelete => a.type === "delete");
 
   log.info("Executing actions", {
     creates: creates.length,
@@ -479,7 +493,7 @@ async function executeActions(
     await updateTransactions(
       apiKey,
       updates.map((a) => ({
-        id: a.tracked!.lmTransactionId,
+        id: a.tracked.lmTransactionId,
         amount: a.lmData.amount,
         currency: a.lmData.currency,
         notes: a.lmData.notes,
@@ -489,7 +503,7 @@ async function executeActions(
     for (const action of updates) {
       dbStmts.push({
         sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, is_deleted = 0, updated_at = datetime('now') WHERE id = ?",
-        args: [action.splitwiseUpdatedAt, action.tracked!.id],
+        args: [action.splitwiseUpdatedAt, action.tracked.id],
       });
     }
   }
@@ -499,7 +513,7 @@ async function executeActions(
     await updateTransactions(
       apiKey,
       deletes.map((a) => ({
-        id: a.tracked!.lmTransactionId,
+        id: a.tracked.lmTransactionId,
         payee: a.lmData.payee,
         amount: 0,
       })),
@@ -508,7 +522,7 @@ async function executeActions(
     for (const action of deletes) {
       dbStmts.push({
         sql: "UPDATE synced_transactions SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?",
-        args: [action.tracked!.id],
+        args: [action.tracked.id],
       });
     }
   }

@@ -34,6 +34,28 @@ api.use("*", async (c, next) => {
   await next();
 });
 
+interface LinkBody {
+  splitwiseGroupId?: string | null;
+  lmAccountId: number;
+  startDate?: string | null;
+  includePayments?: boolean;
+  syncBalance?: boolean;
+  enabled?: boolean;
+}
+
+function validateLinkBody(body: LinkBody): string | null {
+  if (!Number.isInteger(body.lmAccountId) || body.lmAccountId <= 0) {
+    return "Invalid account ID";
+  }
+  if (body.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(body.startDate)) {
+    return "startDate must be YYYY-MM-DD";
+  }
+  if (body.splitwiseGroupId && !/^\d+$/.test(body.splitwiseGroupId)) {
+    return "Invalid Splitwise group ID";
+  }
+  return null;
+}
+
 function parseLinkId(c: Context, param = "id") {
   const raw = c.req.param(param);
   if (!raw) return null;
@@ -153,31 +175,16 @@ api.get("/links/:id", async (c) => {
 });
 
 api.post("/links", async (c) => {
-  const body = await c.req.json<{
-    splitwiseGroupId?: string | null;
-    lmAccountId: number;
-    startDate?: string | null;
-    includePayments?: boolean;
-    syncBalance?: boolean;
-  }>();
-
-  const accountId = body.lmAccountId;
-  if (!Number.isInteger(accountId) || accountId <= 0) {
-    return c.json({ error: "Invalid account ID" }, 400);
-  }
-  if (body.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(body.startDate)) {
-    return c.json({ error: "startDate must be YYYY-MM-DD" }, 400);
-  }
-  if (body.splitwiseGroupId && !/^\d+$/.test(body.splitwiseGroupId)) {
-    return c.json({ error: "Invalid Splitwise group ID" }, 400);
-  }
+  const body = await c.req.json<LinkBody>();
+  const validationError = validateLinkBody(body);
+  if (validationError) return c.json({ error: validationError }, 400);
 
   const db = c.get("db");
   const [created] = await db
     .insert(links)
     .values({
       splitwiseGroupId: body.splitwiseGroupId || null,
-      lmAccountId: accountId,
+      lmAccountId: body.lmAccountId,
       startDate: body.startDate || null,
       includePayments: body.includePayments ? 1 : 0,
       syncBalance: body.syncBalance ? 1 : 0,
@@ -195,25 +202,9 @@ api.post("/links", async (c) => {
 api.put("/links/:id", async (c) => {
   const linkId = parseLinkId(c);
   if (!linkId) return c.json({ error: "Invalid ID" }, 400);
-  const body = await c.req.json<{
-    splitwiseGroupId?: string | null;
-    lmAccountId: number;
-    startDate?: string | null;
-    includePayments?: boolean;
-    syncBalance?: boolean;
-    enabled?: boolean;
-  }>();
-
-  const accountId = body.lmAccountId;
-  if (!Number.isInteger(accountId) || accountId <= 0) {
-    return c.json({ error: "Invalid account ID" }, 400);
-  }
-  if (body.startDate && !/^\d{4}-\d{2}-\d{2}$/.test(body.startDate)) {
-    return c.json({ error: "startDate must be YYYY-MM-DD" }, 400);
-  }
-  if (body.splitwiseGroupId && !/^\d+$/.test(body.splitwiseGroupId)) {
-    return c.json({ error: "Invalid Splitwise group ID" }, 400);
-  }
+  const body = await c.req.json<LinkBody>();
+  const validationError = validateLinkBody(body);
+  if (validationError) return c.json({ error: validationError }, 400);
 
   const db = c.get("db");
   const existing = await db.select({ id: links.id }).from(links).where(eq(links.id, linkId));
@@ -223,7 +214,7 @@ api.put("/links/:id", async (c) => {
     .update(links)
     .set({
       splitwiseGroupId: body.splitwiseGroupId || null,
-      lmAccountId: accountId,
+      lmAccountId: body.lmAccountId,
       startDate: body.startDate || null,
       includePayments: body.includePayments ? 1 : 0,
       syncBalance: body.syncBalance ? 1 : 0,

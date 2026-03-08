@@ -14,7 +14,7 @@ export type UserDb = ReturnType<typeof createUserDrizzle>;
 
 function createSharedDrizzle() {
   const client = createClient({
-    url: env.TURSO_SHARED_DB_URL!,
+    url: env.TURSO_SHARED_DB_URL,
     authToken: env.TURSO_AUTH_TOKEN,
   });
   return drizzle({ client, schema: sharedSchema });
@@ -84,74 +84,82 @@ function isDuplicateColumnError(err: unknown): boolean {
 }
 
 export async function initUserDb(db: UserDb): Promise<void> {
-  // Idempotent table creation (handles brand-new DBs)
-  await db.run(sql`
-    CREATE TABLE IF NOT EXISTS credentials (
-      id INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id = 1),
-      splitwise_access_token TEXT NOT NULL,
-      lunch_money_api_key TEXT,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-  await db.run(sql`
-    CREATE TABLE IF NOT EXISTS links (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      splitwise_group_id TEXT,
-      lm_account_id INTEGER NOT NULL,
-      start_date TEXT,
-      include_payments INTEGER NOT NULL DEFAULT 0,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      sync_balance INTEGER NOT NULL DEFAULT 0,
-      last_synced_at TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-  await db.run(sql`
-    CREATE TABLE IF NOT EXISTS synced_transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      link_id INTEGER NOT NULL REFERENCES links(id),
-      splitwise_expense_id TEXT NOT NULL,
-      lm_transaction_id INTEGER NOT NULL,
-      splitwise_updated_at TEXT NOT NULL,
-      is_deleted INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-  await db.run(sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_synced_link_expense
-      ON synced_transactions(link_id, splitwise_expense_id)
-  `);
-  await db.run(sql`
-    CREATE TABLE IF NOT EXISTS sync_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      link_id INTEGER NOT NULL REFERENCES links(id),
-      started_at TEXT NOT NULL,
-      finished_at TEXT,
-      status TEXT NOT NULL DEFAULT 'running',
-      expenses_fetched INTEGER DEFAULT 0,
-      created INTEGER DEFAULT 0,
-      updated INTEGER DEFAULT 0,
-      deleted INTEGER DEFAULT 0,
-      error_message TEXT
-    )
-  `);
-  await db.run(sql`
-    CREATE INDEX IF NOT EXISTS idx_sync_log_link_id
-      ON sync_log(link_id, started_at DESC)
-  `);
-
-  // Run versioned migrations for existing DBs.
-  // Uses a table instead of PRAGMA user_version since Turso's HTTP API
-  // doesn't support PRAGMA writes.
-  await db.run(sql`
-    CREATE TABLE IF NOT EXISTS schema_version (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      version INTEGER NOT NULL DEFAULT 0
-    )
-  `);
-  await db.run(sql`INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)`);
+  // Idempotent table creation + schema version init as a single batch
+  // to minimize subrequests to Turso (each batch() call = 1 subrequest).
+  await db.$client.batch([
+    {
+      sql: `CREATE TABLE IF NOT EXISTS credentials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id = 1),
+        splitwise_access_token TEXT NOT NULL,
+        lunch_money_api_key TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      args: [],
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        splitwise_group_id TEXT,
+        lm_account_id INTEGER NOT NULL,
+        start_date TEXT,
+        include_payments INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        sync_balance INTEGER NOT NULL DEFAULT 0,
+        last_synced_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      args: [],
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS synced_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        link_id INTEGER NOT NULL REFERENCES links(id),
+        splitwise_expense_id TEXT NOT NULL,
+        lm_transaction_id INTEGER NOT NULL,
+        splitwise_updated_at TEXT NOT NULL,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      args: [],
+    },
+    {
+      sql: `CREATE UNIQUE INDEX IF NOT EXISTS idx_synced_link_expense
+        ON synced_transactions(link_id, splitwise_expense_id)`,
+      args: [],
+    },
+    {
+      sql: `CREATE TABLE IF NOT EXISTS sync_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        link_id INTEGER NOT NULL REFERENCES links(id),
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        status TEXT NOT NULL DEFAULT 'running',
+        expenses_fetched INTEGER DEFAULT 0,
+        created INTEGER DEFAULT 0,
+        updated INTEGER DEFAULT 0,
+        deleted INTEGER DEFAULT 0,
+        error_message TEXT
+      )`,
+      args: [],
+    },
+    {
+      sql: `CREATE INDEX IF NOT EXISTS idx_sync_log_link_id
+        ON sync_log(link_id, started_at DESC)`,
+      args: [],
+    },
+    // Uses a table instead of PRAGMA user_version since Turso's HTTP API
+    // doesn't support PRAGMA writes.
+    {
+      sql: `CREATE TABLE IF NOT EXISTS schema_version (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL DEFAULT 0
+      )`,
+      args: [],
+    },
+    { sql: `INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)`, args: [] },
+  ]);
 
   const versionRows = await db.all<{ version: number }>(
     sql`SELECT version FROM schema_version WHERE id = 1`,

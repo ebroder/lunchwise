@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { Link } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
+import { formatSyncResult, formatDateTime } from "../lib/format.js";
 import { Button, card, inputClass, alertSuccess, alertError } from "../components/ui.js";
 
 interface SyncLink {
@@ -80,7 +81,7 @@ export function Dashboard() {
       }>(`/api/sync/${linkId}`, {});
       setAlert({
         type: "success",
-        message: `Sync complete: ${result.created} created, ${result.updated} updated, ${result.deleted} deleted.`,
+        message: formatSyncResult(result),
       });
       // Refresh links to update lastSyncedAt
       const updated = await api<SyncLink[]>("/api/links");
@@ -205,7 +206,9 @@ export function Dashboard() {
                         Account #{link.lmAccountId}
                       </div>
                       <div class="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
-                        {link.lastSyncedAt ? `Last synced: ${link.lastSyncedAt}` : "Never synced"}
+                        {link.lastSyncedAt
+                          ? `Last synced: ${formatDateTime(link.lastSyncedAt)}`
+                          : "Never synced"}
                         {!link.enabled && (
                           <span class="ml-2 text-amber-600 dark:text-amber-400">(disabled)</span>
                         )}

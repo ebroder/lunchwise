@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
 import { useLocation, useSearch, Link as WouterLink } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
+import { formatSyncResult } from "../lib/format.js";
 import {
   Button,
   card,
@@ -9,6 +10,7 @@ import {
   alertSuccess,
   alertError,
 } from "../components/ui.js";
+import { DryRunResults, type DryRunResult } from "../components/dry-run-results.js";
 
 interface SyncLink {
   id: number;
@@ -30,45 +32,6 @@ interface Account {
   name: string;
   display_name: string | null;
   currency: string;
-}
-
-interface DryRunAction {
-  type: "create" | "update" | "delete";
-  date: string;
-  payee: string;
-  amount: number;
-  currency: string;
-  expenseId: string;
-}
-
-interface BalancePreview {
-  would_sync: boolean;
-  balance: number | null;
-  currency: string | null;
-  balances_by_currency?: { currency: string; amount: number }[];
-}
-
-interface DryRunResult {
-  expenses_fetched: number;
-  created: number;
-  updated: number;
-  deleted: number;
-  actions: DryRunAction[];
-  balance: BalancePreview;
-}
-
-function badgeClass(type: string) {
-  if (type === "create")
-    return "text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-950/50 border-green-200 dark:border-green-800";
-  if (type === "update")
-    return "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/50 border-blue-200 dark:border-blue-800";
-  return "text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/50 border-red-200 dark:border-red-800";
-}
-
-function formatAmount(amount: number, currency: string) {
-  const abs = Math.abs(amount).toFixed(2);
-  if (amount < 0) return `-${currency} ${abs} (credit)`;
-  return `${currency} ${abs}`;
 }
 
 export function LinkEdit({ params }: { params: { id: string } }) {
@@ -205,7 +168,7 @@ export function LinkEdit({ params }: { params: { id: string } }) {
       }>(`/api/sync/${linkId}`, {});
       setAlert({
         type: "success",
-        message: `Sync complete: ${result.created} created, ${result.updated} updated, ${result.deleted} deleted.`,
+        message: formatSyncResult(result),
       });
       setDryRunState("idle");
     } catch (err) {
@@ -357,137 +320,13 @@ export function LinkEdit({ params }: { params: { id: string } }) {
             </Button>
           </div>
 
-          {/* Dry run results */}
-          {dryRunState === "loading" && (
-            <div class="mt-8">
-              <p class="text-sm text-stone-500 dark:text-stone-400">Loading dry run...</p>
-            </div>
-          )}
-
-          {dryRunState === "error" && <div class={`mt-8 ${alertError}`}>{dryRunError}</div>}
-
-          {dryRunState === "done" && dryRunData && (
-            <div class="mt-8">
-              <h2 class="text-lg font-semibold mb-1">Dry Run Results</h2>
-              <p class="text-sm text-stone-500 dark:text-stone-400 mb-4">
-                No changes were made. This shows what a sync would do.
-              </p>
-
-              <div class={`${card} p-4 mb-4`}>
-                <div class="flex flex-wrap gap-x-6 gap-y-1 text-sm">
-                  <span>
-                    Expenses fetched: <span class="font-medium">{dryRunData.expenses_fetched}</span>
-                  </span>
-                  <span>
-                    Would create:{" "}
-                    <span class="font-medium text-green-700 dark:text-green-400">
-                      {dryRunData.created}
-                    </span>
-                  </span>
-                  <span>
-                    Would update:{" "}
-                    <span class="font-medium text-blue-700 dark:text-blue-400">
-                      {dryRunData.updated}
-                    </span>
-                  </span>
-                  <span>
-                    Would delete:{" "}
-                    <span class="font-medium text-red-700 dark:text-red-400">
-                      {dryRunData.deleted}
-                    </span>
-                  </span>
-                </div>
-              </div>
-
-              {dryRunData.balance?.would_sync && (
-                <div class={`${card} p-4 mb-4`}>
-                  <h3 class="text-sm font-medium text-stone-700 dark:text-stone-300 mb-2">
-                    Balance Sync Preview
-                  </h3>
-                  <p class="text-sm text-stone-600 dark:text-stone-400">
-                    Would set account balance to{" "}
-                    <span class="font-medium text-stone-900 dark:text-stone-100">
-                      {dryRunData.balance.currency} {dryRunData.balance.balance?.toFixed(2)}
-                    </span>
-                  </p>
-                  {dryRunData.balance.balances_by_currency &&
-                    new Set(dryRunData.balance.balances_by_currency.map((b) => b.currency)).size >
-                      1 && (
-                      <p class="text-xs text-stone-500 dark:text-stone-400 mt-1">
-                        Converted from:{" "}
-                        {dryRunData.balance.balances_by_currency
-                          .map((b) => `${b.currency} ${b.amount.toFixed(2)}`)
-                          .join(", ")}
-                      </p>
-                    )}
-                </div>
-              )}
-
-              {dryRunData.actions.length === 0 ? (
-                <p class="text-sm text-stone-500 dark:text-stone-400">Nothing to sync.</p>
-              ) : (
-                <>
-                  <div class={`${card} overflow-hidden`}>
-                    <table class="w-full text-sm">
-                      <thead class="bg-stone-50 dark:bg-stone-800/50 border-b border-stone-200 dark:border-stone-800">
-                        <tr>
-                          <th class="text-left px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
-                            Action
-                          </th>
-                          <th class="text-left px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
-                            Date
-                          </th>
-                          <th class="text-left px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
-                            Payee
-                          </th>
-                          <th class="text-right px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
-                            Your Share
-                          </th>
-                          <th class="text-right px-4 py-2 font-medium text-stone-600 dark:text-stone-400">
-                            Expense ID
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody class="divide-y divide-stone-100 dark:divide-stone-800">
-                        {dryRunData.actions.map((a, i) => (
-                          <tr key={i}>
-                            <td class="px-4 py-2">
-                              <span
-                                class={`inline-block px-2 py-0.5 rounded border text-xs font-medium ${badgeClass(a.type)}`}
-                              >
-                                {a.type}
-                              </span>
-                            </td>
-                            <td class="px-4 py-2 text-stone-700 dark:text-stone-300">{a.date}</td>
-                            <td class="px-4 py-2 text-stone-700 dark:text-stone-300 max-w-xs truncate">
-                              {a.payee}
-                            </td>
-                            <td
-                              class={`px-4 py-2 text-right tabular-nums ${
-                                a.amount < 0
-                                  ? "text-green-700 dark:text-green-400"
-                                  : "text-stone-700 dark:text-stone-300"
-                              }`}
-                            >
-                              {formatAmount(a.amount, a.currency)}
-                            </td>
-                            <td class="px-4 py-2 text-right text-stone-400 dark:text-stone-500 tabular-nums">
-                              {a.expenseId}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <div class="mt-4">
-                    <Button type="button" onClick={runSync} disabled={syncing}>
-                      {syncing ? "Syncing..." : "Run Sync for Real"}
-                    </Button>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+          <DryRunResults
+            state={dryRunState}
+            data={dryRunData}
+            error={dryRunError}
+            syncing={syncing}
+            onSync={runSync}
+          />
         </>
       )}
     </div>

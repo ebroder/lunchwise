@@ -30,18 +30,23 @@ export function LinkNew() {
   const [syncBalance, setSyncBalance] = useState(false);
 
   useEffect(() => {
+    const controller = new AbortController();
     Promise.all([
-      api<Group[]>("/api/splitwise/groups"),
-      api<Account[]>("/api/lunch-money/accounts"),
+      api<Group[]>("/api/splitwise/groups", { signal: controller.signal }),
+      api<Account[]>("/api/lunch-money/accounts", { signal: controller.signal }),
     ])
       .then(([g, a]) => {
         setGroups(g);
         setAccounts(a);
       })
       .catch((err) => {
+        if (controller.signal.aborted) return;
         setError(err instanceof ApiError ? err.message : "Failed to load form data");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
   }, []);
 
   async function handleSubmit(e: Event) {

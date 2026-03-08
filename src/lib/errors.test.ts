@@ -31,6 +31,7 @@ describe("describeError", () => {
   });
 
   it("serializes undefined", () => {
+    // eslint-disable-next-line unicorn/no-useless-undefined -- testing explicit undefined handling
     expect(describeError(undefined)).toBe("undefined");
   });
 

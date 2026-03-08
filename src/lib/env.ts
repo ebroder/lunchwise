@@ -1,5 +1,3 @@
-export const env: Record<string, string | undefined> = {};
-
 const REQUIRED_VARS = [
   "SESSION_SECRET",
   "TURSO_SHARED_DB_URL",
@@ -8,7 +6,16 @@ const REQUIRED_VARS = [
   "SPLITWISE_CLIENT_SECRET",
   "APP_URL",
   "ENCRYPTION_KEYS",
+  "TURSO_PLATFORM_API_TOKEN",
+  "TURSO_ORG",
+  "TURSO_GROUP",
 ] as const;
+
+// After validateEnv() passes, required keys are guaranteed to be strings.
+// Optional keys (NODE_ENV, LOG_LEVEL, etc.) remain string | undefined.
+type Env = Record<(typeof REQUIRED_VARS)[number], string> & Record<string, string | undefined>;
+
+export const env: Env = {} as Env;
 
 export function validateEnv(): void {
   const isProduction = env.NODE_ENV === "production";

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { Link } from "wouter";
 import { api, ApiError } from "../lib/api.js";
+import { formatDateTime } from "../lib/format.js";
 import { card, alertError } from "../components/ui.js";
 
 interface LogEntry {
@@ -23,15 +24,22 @@ export function LinkHistory({ params }: { params: { id: string } }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api<{ logs: LogEntry[]; hasMore: boolean }>(`/api/links/${linkId}/history`)
+    const controller = new AbortController();
+    api<{ logs: LogEntry[]; hasMore: boolean }>(`/api/links/${linkId}/history`, {
+      signal: controller.signal,
+    })
       .then((data) => {
         setLogs(data.logs);
         setHasMore(data.hasMore);
       })
       .catch((err) => {
+        if (controller.signal.aborted) return;
         setError(err instanceof ApiError ? err.message : "Failed to load history");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
   }, [linkId]);
 
   return (
@@ -80,7 +88,9 @@ export function LinkHistory({ params }: { params: { id: string } }) {
               <tbody class="divide-y divide-stone-100 dark:divide-stone-800">
                 {logs.map((log) => (
                   <tr key={log.id}>
-                    <td class="px-4 py-2 text-stone-700 dark:text-stone-300">{log.startedAt}</td>
+                    <td class="px-4 py-2 text-stone-700 dark:text-stone-300">
+                      {formatDateTime(log.startedAt)}
+                    </td>
                     <td class="px-4 py-2">
                       <span
                         class={

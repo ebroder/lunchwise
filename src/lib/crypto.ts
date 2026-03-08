@@ -60,8 +60,8 @@ export async function encrypt(plaintext: string): Promise<string> {
   combined.set(new Uint8Array(cipherBuf), iv.length);
 
   let binary = "";
-  for (let i = 0; i < combined.length; i++) {
-    binary += String.fromCharCode(combined[i]);
+  for (const byte of combined) {
+    binary += String.fromCharCode(byte);
   }
   return `${activeKeyId}:${btoa(binary)}`;
 }
