@@ -154,6 +154,13 @@ landing.get("/", async (c) => {
           <a href="/terms" class="hover:text-stone-600 dark:hover:text-stone-400 transition-colors">
             Terms
           </a>
+          <span>&middot;</span>
+          <a
+            href="https://github.com/ebroder/lunchwise"
+            class="hover:text-stone-600 dark:hover:text-stone-400 transition-colors"
+          >
+            GitHub
+          </a>
         </div>
       </footer>
     </>,
