@@ -22,7 +22,7 @@
     "@libsql/client": "^0.17.0",
     "@sentry/cloudflare": "^10.42.0",
     "drizzle-orm": "^0.45.1",
-    "hono": "^4.12.6",
+    "hono": "^4.12.7",
     "jose": "^6.2.1",
     "openapi-fetch": "^0.17.0",
     "preact": "^10.28.4",
