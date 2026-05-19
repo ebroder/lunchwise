@@ -623,23 +623,23 @@ describe("syncLink execute", () => {
 
 // --- syncBalances ---
 
+function makeGroup(id: number, balances: { currency: string; amount: string }[]): SplitwiseGroup {
+  return {
+    id,
+    members: [
+      {
+        id: 123,
+        balance: balances.map((b) => ({
+          currency_code: b.currency,
+          amount: b.amount,
+        })),
+      },
+    ],
+  } as SplitwiseGroup;
+}
+
 describe("syncBalances", () => {
   const rates: ExchangeRates = { USD: 1, EUR: 0.85, GBP: 0.73 };
-
-  function makeGroup(id: number, balances: { currency: string; amount: string }[]): SplitwiseGroup {
-    return {
-      id,
-      members: [
-        {
-          id: 123,
-          balance: balances.map((b) => ({
-            currency_code: b.currency,
-            amount: b.amount,
-          })),
-        },
-      ],
-    } as SplitwiseGroup;
-  }
 
   const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), with: vi.fn() };
 

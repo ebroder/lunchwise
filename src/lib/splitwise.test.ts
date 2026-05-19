@@ -61,14 +61,14 @@ describe("getAllExpenses", () => {
   });
 });
 
-describe("getUserBalances", () => {
-  function makeGroup(balances: { currency_code: string; amount: string }[]): SplitwiseGroup {
-    return {
-      id: 1,
-      members: [{ id: 123, balance: balances }],
-    } as SplitwiseGroup;
-  }
+function makeGroup(balances: { currency_code: string; amount: string }[]): SplitwiseGroup {
+  return {
+    id: 1,
+    members: [{ id: 123, balance: balances }],
+  } as SplitwiseGroup;
+}
 
+describe("getUserBalances", () => {
   it("returns balances for the matching user", () => {
     const group = makeGroup([{ currency_code: "USD", amount: "25.50" }]);
     const result = getUserBalances(group, "123");
