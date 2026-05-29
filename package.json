@@ -41,7 +41,7 @@
     "typescript": "^6.0.3",
     "vite": "^8.0.13",
     "vitest": "^4.0.18",
-    "wrangler": "^4.93.0"
+    "wrangler": "^4.95.0"
   },
   "overrides": {
     "openapi-typescript": {
