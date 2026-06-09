@@ -22,7 +22,7 @@
     "@libsql/client": "^0.17.3",
     "@sentry/cloudflare": "^10.56.0",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.12.23",
+    "hono": "^4.12.25",
     "jose": "^6.2.3",
     "openapi-fetch": "^0.17.0",
     "preact": "^10.29.2",
@@ -31,17 +31,17 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",
-    "@cloudflare/workers-types": "^4.20260603.1",
+    "@cloudflare/workers-types": "^4.20260609.1",
     "@preact/preset-vite": "^2.10.5",
     "@tailwindcss/cli": "^4.3.0",
     "@vitest/coverage-v8": "^4.1.8",
     "openapi-typescript": "^7.13.0",
-    "oxlint": "^1.68.0",
+    "oxlint": "^1.69.0",
     "tailwindcss": "^4.2.1",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "vitest": "^4.0.18",
-    "wrangler": "^4.97.0"
+    "wrangler": "^4.98.0"
   },
   "overrides": {
     "openapi-typescript": {
