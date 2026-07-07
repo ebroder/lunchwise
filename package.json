@@ -46,6 +46,12 @@
   "overrides": {
     "openapi-typescript": {
       "typescript": "$typescript"
+    },
+    "@sentry/cloudflare": {
+      "@cloudflare/workers-types": "$@cloudflare/workers-types"
+    },
+    "wrangler": {
+      "@cloudflare/workers-types": "$@cloudflare/workers-types"
     }
   }
 }
