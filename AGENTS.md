@@ -1,5 +1,7 @@
 # Lunchwise
 
+Working mode: delegated. Evan reviews the product, not the diff, so your tests and your own verification are the only safety net.
+
 Syncs shared expenses from Splitwise to Lunch Money. Users authenticate
 via Splitwise OAuth, provide a Lunch Money API key, then configure "links"
 that map a Splitwise group to a Lunch Money manual account. A background
