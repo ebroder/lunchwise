@@ -47,23 +47,6 @@ export async function insertTransactions(
   return { transactions: allTransactions, skippedDuplicates: allSkipped };
 }
 
-export async function updateTransaction(
-  apiKey: string,
-  transactionId: number,
-  update: components["schemas"]["updateTransactionObject"],
-): Promise<void> {
-  const client = createLunchMoneyClient(apiKey);
-  const { error, response } = await client.PUT("/transactions", {
-    body: {
-      transactions: [{ id: transactionId, ...update }],
-    },
-  });
-
-  if (error) {
-    throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
-  }
-}
-
 // Lunch Money rejects a whole update batch with a 404 if any transaction in it
 // no longer exists, naming the missing IDs in the error body.
 export async function updateTransactions(
