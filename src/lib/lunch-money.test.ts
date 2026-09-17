@@ -142,7 +142,99 @@ describe("updateTransactions", () => {
       "Lunch Money API error (500)",
     );
   });
+
+  it("reports no missing IDs on success", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ transactions: [] }));
+
+    const result = await updateTransactions("key", [{ id: 1, amount: 10 }]);
+
+    expect(result.missingIds).toEqual([]);
+  });
+
+  it("retries without the IDs Lunch Money reports as missing", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse(notFound([2]), 404))
+      .mockResolvedValueOnce(jsonResponse({ transactions: [] }));
+
+    const result = await updateTransactions("key", [
+      { id: 1, amount: 10 },
+      { id: 2, amount: 20 },
+      { id: 3, amount: 30 },
+    ]);
+
+    expect(result.missingIds).toEqual([2]);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(await sentIds(1)).toEqual([1, 3]);
+  });
+
+  it("keeps retrying when each attempt reveals another missing ID", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse(notFound([1]), 404))
+      .mockResolvedValueOnce(jsonResponse(notFound([3]), 404))
+      .mockResolvedValueOnce(jsonResponse({ transactions: [] }));
+
+    const result = await updateTransactions("key", [
+      { id: 1, amount: 10 },
+      { id: 2, amount: 20 },
+      { id: 3, amount: 30 },
+    ]);
+
+    expect(result.missingIds).toEqual([1, 3]);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(await sentIds(2)).toEqual([2]);
+  });
+
+  it("does not retry when every ID in the request is missing", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse(notFound([1]), 404));
+
+    const result = await updateTransactions("key", [{ id: 1, amount: 10 }]);
+
+    expect(result.missingIds).toEqual([1]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws on a 404 that does not name any requested ID", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ message: "Not Found", errors: [{ errMsg: "Route not found" }] }, 404),
+    );
+
+    await expect(updateTransactions("key", [{ id: 1, amount: 10 }])).rejects.toThrow(
+      "Lunch Money API error (404)",
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("collects missing IDs across chunks", async () => {
+    const updates = Array.from({ length: 501 }, (_, i) => ({ id: i, amount: i }));
+
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse(notFound([7]), 404))
+      .mockResolvedValueOnce(jsonResponse({ transactions: [] }))
+      .mockResolvedValueOnce(jsonResponse(notFound([500]), 404));
+
+    const result = await updateTransactions("key", updates);
+
+    expect(result.missingIds).toEqual([7, 500]);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
 });
+
+function notFound(ids: number[]) {
+  return {
+    message: "Not Found",
+    errors: ids.map((id, i) => ({
+      errMsg: `There is no transaction with the id ${id}.`,
+      id,
+      ids_index: i,
+    })),
+  };
+}
+
+async function sentIds(callIndex: number): Promise<number[]> {
+  const request = fetchSpy.mock.calls[callIndex][0] as Request;
+  const body = (await request.json()) as { transactions: { id: number }[] };
+  return body.transactions.map((t) => t.id);
+}
 
 describe("getTransactions", () => {
   it("returns all transactions from a single page", async () => {

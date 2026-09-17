@@ -64,22 +64,48 @@ export async function updateTransaction(
   }
 }
 
+// Lunch Money rejects a whole update batch with a 404 if any transaction in it
+// no longer exists, naming the missing IDs in the error body.
 export async function updateTransactions(
   apiKey: string,
   updates: Array<{ id: number } & components["schemas"]["updateTransactionObject"]>,
-): Promise<void> {
-  if (updates.length === 0) return;
+): Promise<{ missingIds: number[] }> {
+  const missingIds: number[] = [];
+  if (updates.length === 0) return { missingIds };
   const client = createLunchMoneyClient(apiKey);
 
   for (let i = 0; i < updates.length; i += LM_BATCH) {
-    const { error, response } = await client.PUT("/transactions", {
-      body: { transactions: updates.slice(i, i + LM_BATCH) },
-    });
+    let chunk = updates.slice(i, i + LM_BATCH);
+    while (chunk.length > 0) {
+      const { error, response } = await client.PUT("/transactions", {
+        body: { transactions: chunk },
+      });
+      if (!error) break;
 
-    if (error) {
-      throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+      const missing = response.status === 404 ? missingTransactionIds(error) : new Set<number>();
+      const remaining = chunk.filter((u) => !missing.has(u.id));
+      if (remaining.length === chunk.length) {
+        throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+      }
+      for (const u of chunk) {
+        if (missing.has(u.id)) missingIds.push(u.id);
+      }
+      chunk = remaining;
     }
   }
+
+  return { missingIds };
+}
+
+function missingTransactionIds(error: unknown): Set<number> {
+  const ids = new Set<number>();
+  const errors = (error as { errors?: unknown })?.errors;
+  if (!Array.isArray(errors)) return ids;
+  for (const e of errors) {
+    const id = (e as { id?: unknown })?.id;
+    if (typeof id === "number") ids.add(id);
+  }
+  return ids;
 }
 
 export async function getTransactions(

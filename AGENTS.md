@@ -153,3 +153,9 @@ API errors, and the cron handler emit structured logs with context fields
   sync self-heals via duplicate `external_id` handling.
 - Lunch Money's insert and update APIs accept a maximum of 500 transactions
   per request. The client functions in `lunch-money.ts` chunk automatically.
+- Lunch Money's bulk update rejects the whole batch with a 404 if any
+  transaction ID no longer exists (typically because the user deleted it in
+  LM), naming the missing IDs in the error body. `updateTransactions` drops
+  those IDs, retries the rest, and returns them; `executeActions` marks the
+  corresponding `synced_transactions` rows deleted rather than recreating the
+  transaction.

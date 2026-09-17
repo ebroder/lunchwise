@@ -41,7 +41,7 @@ vi.mock("./lunch-money.js", async (importOriginal) => {
     ...mod,
     getTransactions: vi.fn().mockResolvedValue([]),
     insertTransactions: vi.fn().mockResolvedValue({ transactions: [], skippedDuplicates: [] }),
-    updateTransactions: vi.fn().mockResolvedValue(void 0),
+    updateTransactions: vi.fn().mockResolvedValue({ missingIds: [] }),
     getCategories: vi.fn().mockResolvedValue([]),
     getUser: vi.fn().mockResolvedValue({ primary_currency: "usd" }),
     updateAccountBalance: vi.fn().mockResolvedValue(void 0),
@@ -551,7 +551,7 @@ describe("syncLink execute", () => {
     mockInsertTransactions
       .mockReset()
       .mockResolvedValue({ transactions: [], skippedDuplicates: [] });
-    mockUpdateTransactions.mockReset().mockResolvedValue(void 0);
+    mockUpdateTransactions.mockReset().mockResolvedValue({ missingIds: [] });
     mockGetCategories.mockReset().mockResolvedValue([]);
   });
 
@@ -618,6 +618,102 @@ describe("syncLink execute", () => {
     expect(tracked).toHaveLength(2);
     const expenseIds = tracked.map((t) => t.splitwiseExpenseId).sort();
     expect(expenseIds).toEqual(["2001", "2002"]);
+  });
+
+  describe("when the LM transaction has been deleted", () => {
+    async function insertTracked(linkId: number, expenseId: string, lmTransactionId: number) {
+      await db.insert(syncedTransactions).values({
+        linkId,
+        splitwiseExpenseId: expenseId,
+        lmTransactionId,
+        splitwiseUpdatedAt: "2024-06-01T00:00:00Z",
+      });
+    }
+
+    async function trackedRow(linkId: number, expenseId: string) {
+      const [row] = await db
+        .select()
+        .from(syncedTransactions)
+        .where(eq(syncedTransactions.linkId, linkId));
+      expect(row.splitwiseExpenseId).toBe(expenseId);
+      return row;
+    }
+
+    it("stops tracking an edited expense instead of failing the sync", async () => {
+      const link = await insertLink();
+      await insertTracked(link.id, "3001", 9001);
+      mockGetAllExpenses.mockResolvedValue([
+        makeExpense({ id: 3001, updated_at: "2024-06-15T12:00:00Z" }),
+      ]);
+      mockUpdateTransactions.mockResolvedValue({ missingIds: [9001] });
+
+      const result = await syncLink(db, link, defaultUser);
+
+      expect(result.updated).toBe(0);
+      const row = await trackedRow(link.id, "3001");
+      expect(row.isDeleted).toBe(1);
+      expect(row.splitwiseUpdatedAt).toBe("2024-06-15T12:00:00Z");
+      const [log] = await db.select().from(syncLog).where(eq(syncLog.linkId, link.id));
+      expect(log.status).toBe("success");
+      expect(log.updated).toBe(0);
+    });
+
+    it("marks a deleted expense as deleted without zeroing it out", async () => {
+      const link = await insertLink();
+      await insertTracked(link.id, "3002", 9002);
+      mockGetAllExpenses.mockResolvedValue([
+        makeExpense({ id: 3002, deleted_at: "2024-06-16T00:00:00Z" }),
+      ]);
+      mockUpdateTransactions.mockResolvedValue({ missingIds: [9002] });
+
+      const result = await syncLink(db, link, defaultUser);
+
+      expect(result.deleted).toBe(0);
+      const row = await trackedRow(link.id, "3002");
+      expect(row.isDeleted).toBe(1);
+      const [log] = await db.select().from(syncLog).where(eq(syncLog.linkId, link.id));
+      expect(log.status).toBe("success");
+      expect(log.deleted).toBe(0);
+    });
+
+    it("does not re-plan the expense on the next sync", async () => {
+      const link = await insertLink();
+      await insertTracked(link.id, "3003", 9003);
+      mockGetAllExpenses.mockResolvedValue([
+        makeExpense({ id: 3003, updated_at: "2024-06-15T12:00:00Z" }),
+      ]);
+      mockUpdateTransactions.mockResolvedValue({ missingIds: [9003] });
+      await syncLink(db, link, defaultUser);
+
+      const [synced] = await db.select().from(links).where(eq(links.id, link.id));
+      const result = await syncLink(db, synced, defaultUser, { dryRun: true });
+
+      expect(result.actions).toEqual([]);
+    });
+
+    it("still applies the other updates in the batch", async () => {
+      const link = await insertLink();
+      await insertTracked(link.id, "3004", 9004);
+      await insertTracked(link.id, "3005", 9005);
+      mockGetAllExpenses.mockResolvedValue([
+        makeExpense({ id: 3004, updated_at: "2024-06-15T12:00:00Z" }),
+        makeExpense({ id: 3005, updated_at: "2024-06-15T12:00:00Z" }),
+      ]);
+      mockUpdateTransactions.mockResolvedValue({ missingIds: [9004] });
+
+      const result = await syncLink(db, link, defaultUser);
+
+      expect(result.updated).toBe(1);
+      const rows = await db
+        .select()
+        .from(syncedTransactions)
+        .where(eq(syncedTransactions.linkId, link.id))
+        .orderBy(syncedTransactions.splitwiseExpenseId);
+      expect(rows.map((r) => [r.splitwiseExpenseId, r.isDeleted, r.splitwiseUpdatedAt])).toEqual([
+        ["3004", 1, "2024-06-15T12:00:00Z"],
+        ["3005", 0, "2024-06-15T12:00:00Z"],
+      ]);
+    });
   });
 });
 
@@ -781,6 +877,23 @@ describe("raw SQL schema consistency", () => {
       args: [1],
     });
     const rows = await db.select().from(syncedTransactions).where(eq(syncedTransactions.id, 1));
+    expect(rows[0].isDeleted).toBe(1);
+  });
+
+  it("UPDATE synced_transactions (stop tracking pattern) matches schema", async () => {
+    await db.insert(syncedTransactions).values({
+      linkId: 1,
+      splitwiseExpenseId: "exp_1",
+      lmTransactionId: 999,
+      splitwiseUpdatedAt: "2024-01-01T00:00:00Z",
+    });
+    const client = db.$client;
+    await client.execute({
+      sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, is_deleted = 1, updated_at = datetime('now') WHERE id = ?",
+      args: ["2024-02-01T00:00:00Z", 1],
+    });
+    const rows = await db.select().from(syncedTransactions).where(eq(syncedTransactions.id, 1));
+    expect(rows[0].splitwiseUpdatedAt).toBe("2024-02-01T00:00:00Z");
     expect(rows[0].isDeleted).toBe(1);
   });
 

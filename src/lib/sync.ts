@@ -488,9 +488,25 @@ async function executeActions(
     }
   }
 
+  // A transaction the user deleted in LM stays deleted. The stamp keeps the
+  // planner from re-planning the same edit on every sync.
+  let gone = 0;
+  function stopTracking(action: PlannedUpdate | PlannedDelete) {
+    gone++;
+    log.warn("LM transaction no longer exists, no longer tracking expense", {
+      expenseId: action.expenseId,
+      lmTransactionId: action.tracked.lmTransactionId,
+    });
+    dbStmts.push({
+      sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, is_deleted = 1, updated_at = datetime('now') WHERE id = ?",
+      args: [action.splitwiseUpdatedAt, action.tracked.id],
+    });
+  }
+
   // Bulk update in LM
+  let updated = 0;
   if (updates.length > 0) {
-    await updateTransactions(
+    const { missingIds } = await updateTransactions(
       apiKey,
       updates.map((a) => ({
         id: a.tracked.lmTransactionId,
@@ -499,18 +515,25 @@ async function executeActions(
         notes: a.lmData.notes,
       })),
     );
-    log.info("LM update complete", { count: updates.length });
+    const missing = new Set(missingIds);
     for (const action of updates) {
+      if (missing.has(action.tracked.lmTransactionId)) {
+        stopTracking(action);
+        continue;
+      }
+      updated++;
       dbStmts.push({
         sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, is_deleted = 0, updated_at = datetime('now') WHERE id = ?",
         args: [action.splitwiseUpdatedAt, action.tracked.id],
       });
     }
+    log.info("LM update complete", { count: updated, missing: missing.size });
   }
 
   // Bulk delete (zero out) in LM
+  let deleted = 0;
   if (deletes.length > 0) {
-    await updateTransactions(
+    const { missingIds } = await updateTransactions(
       apiKey,
       deletes.map((a) => ({
         id: a.tracked.lmTransactionId,
@@ -518,13 +541,19 @@ async function executeActions(
         amount: 0,
       })),
     );
-    log.info("LM delete (zero-out) complete", { count: deletes.length });
+    const missing = new Set(missingIds);
     for (const action of deletes) {
+      if (missing.has(action.tracked.lmTransactionId)) {
+        stopTracking(action);
+        continue;
+      }
+      deleted++;
       dbStmts.push({
         sql: "UPDATE synced_transactions SET is_deleted = 1, updated_at = datetime('now') WHERE id = ?",
         args: [action.tracked.id],
       });
     }
+    log.info("LM delete (zero-out) complete", { count: deleted, missing: missing.size });
   }
 
   // Batch all DB writes at the end to minimize subrequests. Each batch() call
@@ -544,18 +573,15 @@ async function executeActions(
         error: describeError(err),
         cause: err,
         lmCreated: creates.length,
-        lmUpdated: updates.length,
-        lmDeleted: deletes.length,
+        lmUpdated: updated,
+        lmDeleted: deleted,
+        lmGone: gone,
       });
       throw err;
     }
   }
 
-  return {
-    created: creates.length,
-    updated: updates.length,
-    deleted: deletes.length,
-  };
+  return { created: creates.length, updated, deleted };
 }
 
 export async function syncLink(
@@ -605,6 +631,7 @@ export async function syncLink(
 
   try {
     const counts = await executeActions(db, link, apiKey, actions, log);
+    Object.assign(result, counts);
 
     // Record timestamps for backfilled rows (no LM update needed).
     // Batch to stay within Cloudflare Workers subrequest limits.
