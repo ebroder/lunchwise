@@ -159,3 +159,8 @@ API errors, and the cron handler emit structured logs with context fields
   those IDs, retries the rest, and returns them; `executeActions` marks the
   corresponding `synced_transactions` rows deleted rather than recreating the
   transaction.
+- Sentry's `dataCollection` defaults (since SDK v11) attach request bodies and
+  client IPs to events and spans, which would send users' Lunch Money API keys
+  to Sentry. `src/index.tsx` sets every category explicitly, and
+  `src/index.test.ts` checks the envelopes Sentry actually sends. If a Sentry
+  upgrade breaks that test, fix the config rather than the test.
