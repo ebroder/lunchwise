@@ -543,6 +543,24 @@ describe("syncLink execute", () => {
     return row;
   }
 
+  async function insertTracked(linkId: number, expenseId: string, lmTransactionId: number) {
+    await db.insert(syncedTransactions).values({
+      linkId,
+      splitwiseExpenseId: expenseId,
+      lmTransactionId,
+      splitwiseUpdatedAt: "2024-06-01T00:00:00Z",
+    });
+  }
+
+  async function trackedRow(linkId: number, expenseId: string) {
+    const [row] = await db
+      .select()
+      .from(syncedTransactions)
+      .where(eq(syncedTransactions.linkId, linkId));
+    expect(row.splitwiseExpenseId).toBe(expenseId);
+    return row;
+  }
+
   beforeEach(async () => {
     db = createTestDb();
     await initUserDb(db);
@@ -621,24 +639,6 @@ describe("syncLink execute", () => {
   });
 
   describe("when the LM transaction has been deleted", () => {
-    async function insertTracked(linkId: number, expenseId: string, lmTransactionId: number) {
-      await db.insert(syncedTransactions).values({
-        linkId,
-        splitwiseExpenseId: expenseId,
-        lmTransactionId,
-        splitwiseUpdatedAt: "2024-06-01T00:00:00Z",
-      });
-    }
-
-    async function trackedRow(linkId: number, expenseId: string) {
-      const [row] = await db
-        .select()
-        .from(syncedTransactions)
-        .where(eq(syncedTransactions.linkId, linkId));
-      expect(row.splitwiseExpenseId).toBe(expenseId);
-      return row;
-    }
-
     it("stops tracking an edited expense instead of failing the sync", async () => {
       const link = await insertLink();
       await insertTracked(link.id, "3001", 9001);
