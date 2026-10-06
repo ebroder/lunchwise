@@ -10,6 +10,21 @@ export default Sentry.withSentry(
   (env: Record<string, string>) => ({
     dsn: env.SENTRY_DSN,
     tracesSampleRate: 1.0,
+    // Unset fields default to collecting request bodies, which include users' Lunch Money API keys.
+    dataCollection: {
+      userInfo: false,
+      cookies: false,
+      httpHeaders: {
+        request: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+        response: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+      },
+      httpBodies: [],
+      urlQueryParams: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+      genAI: { inputs: false, outputs: false },
+      databaseQueryData: false,
+      queues: false,
+      graphQL: { document: false, variables: false },
+    },
   }),
   {
     async fetch(
