@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { getAllExpenses, getUserBalances, type SplitwiseGroup } from "./splitwise.js";
+import { classifySyncError, describeError } from "./errors.js";
+import {
+  getAllExpenses,
+  getGroup,
+  getGroups,
+  getUserBalances,
+  type SplitwiseGroup,
+} from "./splitwise.js";
 
 const fetchSpy = vi.spyOn(globalThis, "fetch");
 
@@ -98,5 +105,24 @@ describe("getUserBalances", () => {
     expect(result).toHaveLength(2);
     expect(result[0]).toEqual({ currency: "USD", amount: 10 });
     expect(result[1]).toEqual({ currency: "EUR", amount: -5 });
+  });
+});
+
+describe("rejected access", () => {
+  it.each([
+    ["getAllExpenses", () => getAllExpenses("token", {})],
+    ["getGroups", () => getGroups("token")],
+    ["getGroup", () => getGroup("token", 10)],
+  ])("fails %s with an error the sync recognizes", async (_name, call) => {
+    fetchSpy.mockImplementation(async () =>
+      jsonResponse({ error: "Invalid API request: you are not logged in" }, 401),
+    );
+
+    const err = await call().then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(classifySyncError(describeError(err))).toBe("splitwise-access");
   });
 });

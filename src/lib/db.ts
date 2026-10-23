@@ -75,6 +75,13 @@ const migrations: { version: number; sql: string[] }[] = [
     version: 1,
     sql: [`ALTER TABLE links ADD COLUMN sync_balance INTEGER NOT NULL DEFAULT 0`],
   },
+  {
+    version: 2,
+    sql: [
+      `ALTER TABLE credentials ADD COLUMN lunch_money_key_updated_at TEXT`,
+      `ALTER TABLE credentials ADD COLUMN splitwise_token_updated_at TEXT`,
+    ],
+  },
 ];
 
 function isDuplicateColumnError(err: unknown): boolean {
@@ -95,6 +102,8 @@ export async function initUserDb(db: UserDb): Promise<void> {
         id INTEGER PRIMARY KEY AUTOINCREMENT CHECK (id = 1),
         splitwise_access_token TEXT NOT NULL,
         lunch_money_api_key TEXT,
+        lunch_money_key_updated_at TEXT,
+        splitwise_token_updated_at TEXT,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )`,
       args: [],

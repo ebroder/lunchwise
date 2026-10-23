@@ -4,7 +4,7 @@ import { eq, desc } from "drizzle-orm";
 import { requireAuthJson, type AuthEnv } from "../lib/auth.js";
 import { credentials, links, syncLog } from "../lib/schema-user.js";
 import { syncLink, syncBalances } from "../lib/sync.js";
-import { describeError } from "../lib/errors.js";
+import { classifySyncError, describeError } from "../lib/errors.js";
 import { createSplitwiseClient, getGroups, getGroup, getUserBalances } from "../lib/splitwise.js";
 import { createLunchMoneyClient, getManualAccounts, getUser } from "../lib/lunch-money.js";
 import { getExchangeRates, convertCurrency } from "../lib/exchange-rates.js";
@@ -12,6 +12,12 @@ import { getSharedDb } from "../lib/db.js";
 import { encrypt } from "../lib/crypto.js";
 import { createLogger } from "../lib/logger.js";
 import { requestBudgetExceeded, requestsUsed, withRequestBudget } from "../lib/request-budget.js";
+import {
+  getSyncFailures,
+  isCredentialRejection,
+  logSyncFailure,
+  syncFailureMessages,
+} from "../lib/sync-failure.js";
 
 const api = new Hono<AuthEnv>();
 
@@ -75,7 +81,12 @@ function parseLinkId(c: Context, param = "id") {
 
 api.get("/me", async (c) => {
   const user = c.get("user");
-  return c.json({ hasLunchMoney: !!user.lunchMoneyApiKey });
+  if (!user.lunchMoneyApiKey) {
+    return c.json({ hasLunchMoney: false, lunchMoneyKeyRejected: false });
+  }
+  const failures = await getSyncFailures(c.get("db"));
+  const lunchMoneyKeyRejected = [...failures.values()].some((f) => f.reason === "lunch-money-key");
+  return c.json({ hasLunchMoney: true, lunchMoneyKeyRejected });
 });
 
 // --- Settings ---
@@ -95,12 +106,10 @@ api.post("/settings/lunch-money", async (c) => {
     return c.json({ error: "Invalid API key" }, 400);
   }
 
+  const now = new Date().toISOString();
   await db
     .update(credentials)
-    .set({
-      lunchMoneyApiKey: await encrypt(apiKey),
-      updatedAt: new Date().toISOString(),
-    })
+    .set({ lunchMoneyApiKey: await encrypt(apiKey), lunchMoneyKeyUpdatedAt: now, updatedAt: now })
     .where(eq(credentials.id, 1));
 
   const user = c.get("user");
@@ -166,7 +175,8 @@ api.get("/lunch-money/accounts", async (c) => {
 api.get("/links", async (c) => {
   const db = c.get("db");
   const rows = await db.select().from(links).orderBy(desc(links.createdAt));
-  return c.json(rows);
+  const failures = await getSyncFailures(db);
+  return c.json(rows.map((link) => ({ ...link, lastFailure: failures.get(link.id) ?? null })));
 });
 
 api.get("/links/:id", async (c) => {
@@ -368,7 +378,7 @@ api.get("/links/:id/dry-run", async (c) => {
       );
       return c.json({ error: "This dry run was too large to finish in one go." }, 500);
     }
-    log.error("Dry run failed", { error: describeError(err), cause: err });
+    logSyncFailure(log, "Dry run failed", err);
     return c.json({ error: "Dry run failed" }, 500);
   }
 });
@@ -421,8 +431,12 @@ api.post("/sync/:linkId", async (c) => {
         500,
       );
     }
-    log.error("Sync failed", { error: describeError(err), cause: err });
-    return c.json({ error: "Sync failed" }, 500);
+    const reason = classifySyncError(describeError(err));
+    // syncLink has already sent a rejected credential to Sentry as a warning
+    if (!isCredentialRejection(reason)) {
+      log.error("Sync failed", { error: describeError(err), cause: err });
+    }
+    return c.json({ error: `Sync failed. ${syncFailureMessages[reason]}` }, 500);
   }
 });
 

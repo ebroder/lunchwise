@@ -9,6 +9,7 @@ import worker from "./index.js";
 import { encrypt, resetKeyCache } from "./lib/crypto.js";
 import { getSharedDb, getUserDb, initUserDb, type SharedDb, type UserDb } from "./lib/db.js";
 import { initEnv } from "./lib/env.js";
+import { apiError } from "./lib/errors.js";
 import { getExchangeRates } from "./lib/exchange-rates.js";
 import { getUser } from "./lib/lunch-money.js";
 import { countedFetch, REQUEST_BUDGET, REQUEST_WARNING } from "./lib/request-budget.js";
@@ -119,11 +120,14 @@ function fakeRuntime() {
     return new Response("{}");
   });
 
+  // an earlier runtime in the same test shares the spy
+  const firstCall = fetchSpy.mock.calls.length;
+  const calls = () => fetchSpy.mock.calls.slice(firstCall);
+
   return {
     delivered,
-    fetches: () => fetchSpy.mock.calls.length,
-    sentrySends: () =>
-      fetchSpy.mock.calls.filter(([url]) => String(url).includes(SENTRY_HOST)).length,
+    fetches: () => calls().length,
+    sentrySends: () => calls().filter(([url]) => String(url).includes(SENTRY_HOST)).length,
     async run(invoke: (ctx: ExecutionContext) => unknown): Promise<void> {
       const pending: Promise<unknown>[] = [];
       const ctx = {
@@ -156,6 +160,12 @@ function sentryItems(envelopes: string[]): Record<string, unknown>[] {
         return [];
       }
     });
+}
+
+function sentryWarningFingerprints(envelopes: string[]): unknown[] {
+  return sentryItems(envelopes).flatMap((item) =>
+    item.level === "warning" ? [item.fingerprint] : [],
+  );
 }
 
 function sentryErrors(envelopes: string[]): string[] {
@@ -224,14 +234,18 @@ async function queueInvocation(
   return { message, delivered: runtime.delivered, fetches: runtime.fetches() };
 }
 
-async function apiInvocation(method: string, path: string) {
+async function apiInvocation(method: string, path: string, json?: unknown) {
   const session = await new SignJWT({ sub: "7" })
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(workerEnv.SESSION_SECRET));
   const request = new Request(`https://lunchwise.example.com${path}`, {
     method,
-    headers: { cookie: `lunchwise_session=${session}` },
+    headers: {
+      cookie: `lunchwise_session=${session}`,
+      ...(json === undefined ? {} : { "content-type": "application/json" }),
+    },
+    body: json === undefined ? undefined : JSON.stringify(json),
   });
   const runtime = fakeRuntime();
   let status = 0;
@@ -268,6 +282,7 @@ function countQueries(client: Client): void {
 // User 7 with one enabled link, link 1 unless `link` says otherwise.
 async function seedUserWithLink(
   link: Partial<typeof userSchema.links.$inferInsert> = {},
+  syncs: (typeof userSchema.syncLog.$inferInsert)[] = [],
 ): Promise<UserDb> {
   initEnv(workerEnv);
   resetKeyCache();
@@ -300,6 +315,7 @@ async function seedUserWithLink(
     lastSyncedAt: "2026-01-01T00:00:00Z",
     ...link,
   });
+  if (syncs.length > 0) await userDb.insert(userSchema.syncLog).values(syncs);
 
   countQueries(sharedClient);
   countQueries(userClient);
@@ -410,6 +426,26 @@ describe("Sentry reports", () => {
     expect(syncLogs.map((row) => row.status)).toEqual(["running"]);
   });
 
+  it("deliver credentials rejected during a queued sync as Sentry warnings, not errors", async () => {
+    await seedUserWithLink({ syncBalance: 1 });
+    vi.mocked(getAllExpenses).mockRejectedValue(
+      apiError("Splitwise", 401, { error: "Invalid API request: you are not logged in" }),
+    );
+    vi.mocked(getUser).mockRejectedValue(apiError("Lunch Money", 401, { message: "Unauthorized" }));
+
+    const { message, delivered } = await queueInvocation(realSyncUser, SYNC_QUEUE, {
+      userId: 7,
+      exchangeRates: { USD: 1 },
+    });
+
+    expect(message.ack).toHaveBeenCalled();
+    expect(sentryErrors(delivered)).toEqual([]);
+    expect(sentryWarningFingerprints(delivered)).toEqual([
+      ["sync-credential-rejected", "splitwise-access"],
+      ["sync-credential-rejected", "lunch-money-key"],
+    ]);
+  });
+
   it("deliver a dead-lettered sync's report with the user id and nothing else from the message", async () => {
     const { message, delivered } = await queueInvocation(async () => {}, SYNC_DEAD_LETTER_QUEUE, {
       userId: 7,
@@ -480,6 +516,51 @@ describe("Sync now and dry run", () => {
     expect(sentryErrors(delivered)).toEqual([]);
   });
 
+  it("Sync now explains a rejected credential and reports it as a Sentry warning", async () => {
+    await seedUserWithLink({ id: 5 });
+    vi.mocked(getAllExpenses).mockRejectedValue(
+      apiError("Splitwise", 401, { error: "Invalid API request: you are not logged in" }),
+    );
+
+    const { status, body, delivered } = await apiInvocation("POST", "/api/sync/5");
+
+    expect(status).toBe(500);
+    expect(body).toEqual({
+      error:
+        "Sync failed. Splitwise no longer accepts Lunchwise's access. Log out and log back in.",
+    });
+    expect(sentryErrors(delivered)).toEqual([]);
+    expect(sentryWarningFingerprints(delivered)).toEqual([
+      ["sync-credential-rejected", "splitwise-access"],
+    ]);
+  });
+
+  it("Sync now points to History for any other failure", async () => {
+    await seedUserWithLink({ id: 6 });
+    vi.mocked(getAllExpenses).mockRejectedValue(apiError("Splitwise", 503, "Service Unavailable"));
+
+    const { status, body, delivered } = await apiInvocation("POST", "/api/sync/6");
+
+    expect(status).toBe(500);
+    expect(body).toEqual({ error: "Sync failed. See History for details." });
+    expect(sentryErrors(delivered)).toEqual(["Splitwise API error (503): Service Unavailable"]);
+  });
+
+  it("dry run reports a rejected credential as a Sentry warning", async () => {
+    await seedUserWithLink({ id: 8 });
+    vi.mocked(getAllExpenses).mockRejectedValue(
+      apiError("Splitwise", 401, { error: "Invalid API request: you are not logged in" }),
+    );
+
+    const { status, delivered } = await apiInvocation("GET", "/api/links/8/dry-run");
+
+    expect(status).toBe(500);
+    expect(sentryErrors(delivered)).toEqual([]);
+    expect(sentryWarningFingerprints(delivered)).toEqual([
+      ["sync-credential-rejected", "splitwise-access"],
+    ]);
+  });
+
   it("dry run returns its plan", async () => {
     await seedUserWithLink();
     vi.mocked(getAllExpenses).mockResolvedValue([]);
@@ -496,5 +577,94 @@ describe("Sync now and dry run", () => {
     });
     expect(status).toBe(200);
     expect(sentryErrors(delivered)).toEqual([]);
+  });
+});
+
+describe("Dashboard", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const rejectedKey = {
+    linkId: 1,
+    startedAt: "2026-10-23T12:00:00.000Z",
+    finishedAt: "2026-10-23 12:00:05",
+    status: "error",
+    errorMessage: 'Lunch Money API error (401): {"message":"Unauthorized"}',
+  };
+  const keyRejectedFailure = {
+    at: "2026-10-23T12:00:00.000Z",
+    reason: "lunch-money-key",
+    message: "Lunch Money no longer accepts your API key. Enter a new one under Connections.",
+  };
+
+  it("lists each link with its latest sync failure", async () => {
+    const userDb = await seedUserWithLink({}, [rejectedKey]);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    await userDb.insert(userSchema.links).values({ id: 2, lmAccountId: 200 });
+
+    const { status, body } = await apiInvocation("GET", "/api/links");
+
+    expect(status).toBe(200);
+    expect(body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 1, lmAccountId: 100, lastFailure: keyRejectedFailure }),
+        expect.objectContaining({ id: 2, lmAccountId: 200, lastFailure: null }),
+      ]),
+    );
+  });
+
+  it("says Lunch Money rejected the key until a new one is saved", async () => {
+    await seedUserWithLink({}, [rejectedKey]);
+
+    const before = await apiInvocation("GET", "/api/me");
+    const saved = await apiInvocation("POST", "/api/settings/lunch-money", { apiKey: "new-key" });
+    const after = await apiInvocation("GET", "/api/me");
+    const linksAfter = await apiInvocation("GET", "/api/links");
+
+    expect(before.body).toEqual({ hasLunchMoney: true, lunchMoneyKeyRejected: true });
+    expect(saved.body).toEqual({ ok: true });
+    expect(after.body).toEqual({ hasLunchMoney: true, lunchMoneyKeyRejected: false });
+    expect(linksAfter.body).toEqual([expect.objectContaining({ id: 1, lastFailure: null })]);
+  });
+
+  it("adds one Turso request to each dashboard request", async () => {
+    await seedUserWithLink({}, [rejectedKey]);
+    const baseline = await apiInvocation("GET", "/api/links/1");
+
+    const me = await apiInvocation("GET", "/api/me");
+    const links = await apiInvocation("GET", "/api/links");
+
+    expect(me.requests).toBe(baseline.requests);
+    expect(links.requests).toBe(baseline.requests + 1);
+  });
+
+  it("records when logging in replaced the Splitwise token", async () => {
+    const userDb = await seedUserWithLink();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const href = input instanceof Request ? input.url : String(input);
+      if (href === "https://www.splitwise.com/oauth/token") {
+        return Response.json({ access_token: "new-token" });
+      }
+      if (href.endsWith("/get_current_user")) return Response.json({ user: { id: 123 } });
+      return new Response("{}");
+    });
+    const before = new Date().toISOString();
+
+    const response = await worker.fetch!(
+      new Request("https://lunchwise.example.com/auth/splitwise/callback?code=c&state=s", {
+        headers: { cookie: "oauth_state=s" },
+      }),
+      workerEnv,
+      {
+        waitUntil: () => {},
+        passThroughOnException: () => {},
+        props: {},
+      } as unknown as ExecutionContext,
+    );
+
+    expect(response.status).toBe(302);
+    const [cred] = await userDb.select().from(userSchema.credentials);
+    expect(cred.splitwiseTokenUpdatedAt! >= before).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 import createClient from "openapi-fetch";
 import type { paths, components } from "./splitwise-api.js";
-import { describeError } from "./errors.js";
+import { apiError } from "./errors.js";
 import { countedFetch } from "./request-budget.js";
 
 export type SplitwiseExpense = components["schemas"]["expense"];
@@ -41,7 +41,7 @@ export async function getAllExpenses(
     });
 
     if (error) {
-      throw new Error(`Splitwise API error (${response.status}): ${describeError(error)}`);
+      throw apiError("Splitwise", response.status, error);
     }
 
     const expenses = data?.expenses ?? [];
@@ -70,7 +70,7 @@ export async function getGroups(accessToken: string): Promise<SplitwiseGroup[]> 
   const { data, error, response } = await client.GET("/get_groups");
 
   if (error) {
-    throw new Error(`Splitwise API error (${response.status}): ${describeError(error)}`);
+    throw apiError("Splitwise", response.status, error);
   }
 
   return data?.groups ?? [];
@@ -86,7 +86,7 @@ export async function getGroup(
   });
 
   if (error) {
-    throw new Error(`Splitwise API error (${response.status}): ${describeError(error)}`);
+    throw apiError("Splitwise", response.status, error);
   }
 
   return data?.group ?? null;

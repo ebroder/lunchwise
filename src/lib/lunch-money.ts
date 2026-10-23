@@ -1,6 +1,6 @@
 import createClient from "openapi-fetch";
 import type { paths, components } from "./lunch-money-api.js";
-import { describeError } from "./errors.js";
+import { apiError } from "./errors.js";
 import { countedFetch } from "./request-budget.js";
 
 export type LmTransaction = components["schemas"]["transactionObject"];
@@ -39,7 +39,7 @@ export async function insertTransactions(
     });
 
     if (error) {
-      throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+      throw apiError("Lunch Money", response.status, error);
     }
 
     allTransactions.push(...data.transactions);
@@ -70,7 +70,7 @@ export async function updateTransactions(
       const missing = response.status === 404 ? missingTransactionIds(error) : new Set<number>();
       const remaining = chunk.filter((u) => !missing.has(u.id));
       if (remaining.length === chunk.length) {
-        throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+        throw apiError("Lunch Money", response.status, error);
       }
       for (const u of chunk) {
         if (missing.has(u.id)) missingIds.push(u.id);
@@ -123,7 +123,7 @@ export async function getTransactions(
     });
 
     if (error) {
-      throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+      throw apiError("Lunch Money", response.status, error);
     }
 
     all.push(...data.transactions);
@@ -145,7 +145,7 @@ export async function getManualAccounts(apiKey: string): Promise<LmManualAccount
   const { data, error, response } = await client.GET("/manual_accounts");
 
   if (error) {
-    throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+    throw apiError("Lunch Money", response.status, error);
   }
 
   return data.manual_accounts ?? [];
@@ -156,7 +156,7 @@ export async function getUser(apiKey: string): Promise<LmUser> {
   const { data, error, response } = await client.GET("/me");
 
   if (error) {
-    throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+    throw apiError("Lunch Money", response.status, error);
   }
 
   return data;
@@ -169,7 +169,7 @@ export async function getCategories(apiKey: string): Promise<LmCategory[]> {
   });
 
   if (error) {
-    throw new Error(`Lunch Money API error (${response.status}): ${describeError(error)}`);
+    throw apiError("Lunch Money", response.status, error);
   }
 
   return data.categories ?? [];
@@ -190,8 +190,6 @@ export async function updateAccountBalance(
   });
 
   if (error) {
-    throw new Error(
-      `Lunch Money update balance error (${response.status}): ${describeError(error)}`,
-    );
+    throw apiError("Lunch Money", response.status, error);
   }
 }

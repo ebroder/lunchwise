@@ -25,7 +25,8 @@ import type { User } from "./auth.js";
 import { decrypt } from "./crypto.js";
 import { stemmer } from "stemmer";
 import { createLogger } from "./logger.js";
-import { describeError } from "./errors.js";
+import { describeError, INTERRUPTED_MESSAGE } from "./errors.js";
+import { logSyncFailure } from "./sync-failure.js";
 import { requestBudgetExceeded } from "./request-budget.js";
 
 type Link = typeof links.$inferSelect;
@@ -687,7 +688,7 @@ export async function syncLink(
   } catch (err) {
     // a sync_log write would be refused, and the consumer's budget report needs the Sentry headroom
     if (requestBudgetExceeded()) throw err;
-    log.error("Sync failed", { error: describeError(err), cause: err });
+    logSyncFailure(log, "Sync failed", err);
     if (logEntryId !== undefined) {
       try {
         await db
@@ -779,11 +780,7 @@ export async function syncBalances(
       });
     } catch (err) {
       if (requestBudgetExceeded()) throw err;
-      log.error("Balance sync failed for account", {
-        accountId,
-        error: describeError(err),
-        cause: err,
-      });
+      logSyncFailure(log, "Balance sync failed for account", err, { accountId });
     }
   }
 }
@@ -805,7 +802,7 @@ export async function syncUser(userId: number, exchangeRates: ExchangeRates | nu
   // Clean up stale sync_log entries from interrupted runs
   const cleaned = await userDb.run(sql`
     UPDATE sync_log
-    SET status = 'error', finished_at = datetime('now'), error_message = 'Process interrupted'
+    SET status = 'error', finished_at = datetime('now'), error_message = ${INTERRUPTED_MESSAGE}
     WHERE status = 'running'
   `);
   if (cleaned.rowsAffected > 0) {
@@ -853,7 +850,7 @@ export async function syncUser(userId: number, exchangeRates: ExchangeRates | nu
       await syncBalances(enabledLinks, user, exchangeRates, log);
     } catch (err) {
       if (requestBudgetExceeded()) throw err;
-      log.error("Balance sync failed", { error: describeError(err), cause: err });
+      logSyncFailure(log, "Balance sync failed", err);
     }
   }
 

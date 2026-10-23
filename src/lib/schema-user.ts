@@ -7,6 +7,8 @@ export const credentials = sqliteTable("credentials", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   splitwiseAccessToken: text("splitwise_access_token").notNull(),
   lunchMoneyApiKey: text("lunch_money_api_key"),
+  lunchMoneyKeyUpdatedAt: text("lunch_money_key_updated_at"),
+  splitwiseTokenUpdatedAt: text("splitwise_token_updated_at"),
   updatedAt: timestamp("updated_at"),
 });
 

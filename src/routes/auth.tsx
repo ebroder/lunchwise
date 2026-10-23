@@ -110,17 +110,20 @@ auth.get("/splitwise/callback", async (c) => {
 
       await userDb.insert(credentials).values({
         splitwiseAccessToken: await encrypt(accessToken),
+        splitwiseTokenUpdatedAt: new Date().toISOString(),
       });
     } else {
       // Returning user: run any pending migrations, then update access token
       const userDb = getUserDb(tursoDbUrl);
       await initUserDb(userDb);
       markDbInitialized(tursoDbUrl);
+      const now = new Date().toISOString();
       await userDb
         .update(credentials)
         .set({
           splitwiseAccessToken: await encrypt(accessToken),
-          updatedAt: new Date().toISOString(),
+          splitwiseTokenUpdatedAt: now,
+          updatedAt: now,
         })
         .where(eq(credentials.id, 1));
     }

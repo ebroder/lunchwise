@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { classifySyncError, describeError } from "./errors.js";
 import {
   insertTransactions,
   updateTransactions,
   getTransactions,
+  getManualAccounts,
+  getUser,
+  getCategories,
+  updateAccountBalance,
   type LmInsertTransaction,
 } from "./lunch-money.js";
 
@@ -283,5 +288,26 @@ describe("getTransactions", () => {
     await expect(getTransactions("key", { manual_account_id: 100 })).rejects.toThrow(
       "Lunch Money API error (403)",
     );
+  });
+});
+
+describe("a rejected API key", () => {
+  it.each([
+    ["insertTransactions", () => insertTransactions("key", [makeTx(1)])],
+    ["updateTransactions", () => updateTransactions("key", [{ id: 1, notes: "n" }])],
+    ["getTransactions", () => getTransactions("key", { manual_account_id: 100 })],
+    ["getManualAccounts", () => getManualAccounts("key")],
+    ["getUser", () => getUser("key")],
+    ["getCategories", () => getCategories("key")],
+    ["updateAccountBalance", () => updateAccountBalance("key", 100, 1)],
+  ])("fails %s with an error the sync recognizes", async (_name, call) => {
+    fetchSpy.mockImplementation(async () => jsonResponse({ message: "Unauthorized" }, 401));
+
+    const err = await call().then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(classifySyncError(describeError(err))).toBe("lunch-money-key");
   });
 });

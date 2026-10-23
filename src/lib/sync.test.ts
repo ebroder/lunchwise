@@ -9,6 +9,7 @@ import { getSharedDb, getUserDb, initUserDb, type SharedDb, type UserDb } from "
 import { syncLink, syncBalances, syncUser } from "./sync.js";
 import { env } from "./env.js";
 import { encrypt } from "./crypto.js";
+import { apiError } from "./errors.js";
 import {
   countedFetch,
   REQUEST_BUDGET,
@@ -137,6 +138,17 @@ function loggedErrors(): { msg: string; linkId: number }[] {
     return { msg, linkId };
   });
 }
+
+// Needs console.warn spied on.
+function loggedWarnings(): string[] {
+  return vi.mocked(console.warn).mock.calls.map(([line]) => {
+    return (JSON.parse(String(line)) as { msg: string }).msg;
+  });
+}
+
+const lunchMoneyRejection = () => apiError("Lunch Money", 401, { message: "Unauthorized" });
+const splitwiseRejection = () =>
+  apiError("Splitwise", 401, { error: "Invalid API request: you are not logged in" });
 
 const defaultUser: User = {
   id: 1,
@@ -644,15 +656,15 @@ describe("syncLink execute", () => {
 
   it("logs a planning failure and records it in sync_log", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockRejectedValue(new Error("Splitwise API error (401)"));
+    mockGetAllExpenses.mockRejectedValue(new Error("Splitwise API error (502)"));
 
-    await expect(syncLink(db, link, defaultUser)).rejects.toThrow("Splitwise API error (401)");
+    await expect(syncLink(db, link, defaultUser)).rejects.toThrow("Splitwise API error (502)");
 
     const logs = await db.select().from(syncLog).where(eq(syncLog.linkId, link.id));
     expect(logs).toEqual([
       expect.objectContaining({
         status: "error",
-        errorMessage: expect.stringContaining("Splitwise API error (401)"),
+        errorMessage: expect.stringContaining("Splitwise API error (502)"),
         finishedAt: expect.any(String),
         expensesFetched: 0,
         created: 0,
@@ -661,6 +673,35 @@ describe("syncLink execute", () => {
       }),
     ]);
     expect(loggedErrors()).toEqual([{ msg: "Sync failed", linkId: link.id }]);
+  });
+
+  it.each([
+    {
+      service: "Lunch Money",
+      reject: () => mockGetCategories.mockRejectedValue(lunchMoneyRejection()),
+      warning: "Sync failed: Lunch Money rejected the user's API key",
+    },
+    {
+      service: "Splitwise",
+      reject: () => mockGetAllExpenses.mockRejectedValue(splitwiseRejection()),
+      warning: "Sync failed: Splitwise rejected the user's access token",
+    },
+  ])("logs $service rejecting a credential as a warning and records it", async (c) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const link = await insertLink();
+    c.reject();
+
+    await expect(syncLink(db, link, defaultUser)).rejects.toThrow("API error (401)");
+
+    const logs = await db.select().from(syncLog).where(eq(syncLog.linkId, link.id));
+    expect(logs).toEqual([
+      expect.objectContaining({
+        status: "error",
+        errorMessage: expect.stringContaining(`${c.service} API error (401)`),
+      }),
+    ]);
+    expect(loggedErrors()).toEqual([]);
+    expect(loggedWarnings()).toEqual([c.warning]);
   });
 
   it("leaves no trace of a failed dry run", async () => {
@@ -931,6 +972,21 @@ describe("syncBalances", () => {
     expect(log.error).toHaveBeenCalled();
   });
 
+  it("logs a rejected key as a fingerprinted warning", async () => {
+    const link = makeLink({ splitwiseGroupId: "10" });
+    mockGetGroup.mockResolvedValue(makeGroup(10, [{ currency: "USD", amount: "25.50" }]));
+    mockUpdateAccountBalance.mockRejectedValue(lunchMoneyRejection());
+
+    await syncBalances([link], defaultUser, rates, log);
+
+    expect(log.warn).toHaveBeenCalledWith(
+      "Balance sync failed for account: Lunch Money rejected the user's API key",
+      expect.objectContaining({ accountId: 100 }),
+      { fingerprint: ["sync-credential-rejected", "lunch-money-key"] },
+    );
+    expect(log.error).not.toHaveBeenCalled();
+  });
+
   it("skips links with syncBalance=0", async () => {
     const link = makeLink({ syncBalance: 0 });
 
@@ -1062,6 +1118,23 @@ describe("syncUser", () => {
       [first.id]: ["error"],
       [second.id]: ["success"],
     });
+  });
+
+  it("logs a rejected Lunch Money key as warnings, not errors", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const link = await addLink({ syncBalance: 1 });
+    mockGetCategories.mockRejectedValue(lunchMoneyRejection());
+    mockGetUser.mockRejectedValue(lunchMoneyRejection());
+
+    await syncUser(1, rates);
+
+    expect(await syncLogStatuses()).toEqual({ [link.id]: ["error"] });
+    expect(loggedErrors()).toEqual([]);
+    expect(loggedWarnings()).toEqual([
+      "Sync failed: Lunch Money rejected the user's API key",
+      "Balance sync failed: Lunch Money rejected the user's API key",
+    ]);
   });
 
   it("throws when the user's setup fails, so the queue retries it", async () => {

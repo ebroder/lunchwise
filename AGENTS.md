@@ -83,6 +83,25 @@ auth middleware so authentication's queries count. One that runs out sends a
 single Sentry error naming the user, link and request count, and the page
 says the sync was too large to finish in one go.
 
+**Sync failures**: A 401 from Lunch Money or Splitwise (during a link sync,
+balance sync, "Sync now" or a dry run) goes to Sentry as a warning
+fingerprinted `["sync-credential-rejected", <reason>]`, through
+`logSyncFailure` in `src/lib/sync-failure.ts`. Only the user can replace a
+dead credential, so one of these isn't something we can act on, but a burst of
+them in that issue probably means a bug on our side. Every other sync failure
+is an error.
+
+`classifySyncError` (`src/lib/errors.ts`) sorts a failure into a reason from
+its `describeError` text, which is also what `sync_log.error_message` stores,
+so `getSyncFailures` can explain past failures without a reason column. It
+depends on the format `apiError` gives every Lunch Money and Splitwise error,
+and the client tests pin that. `GET /api/links` gives each link its latest
+finished sync's failure (`lastFailure`, or `null`), and `GET /api/me` says
+whether Lunch Money has rejected the key. A credential rejection stops
+counting once that credential is replaced, going by
+`credentials.lunch_money_key_updated_at` or `splitwise_token_updated_at`.
+(`credentials.updated_at` won't do, because every login bumps it.)
+
 ## Project layout
 
 ```
@@ -103,6 +122,8 @@ src/
     turso.ts         Turso Platform API (creating per-user databases)
     sync.ts          Core sync logic (Splitwise -> Lunch Money, balance sync)
     sync-queue.ts    Cron fan-out to the sync queue, and its consumer
+    sync-failure.ts  Sync failure reasons for the dashboard and Sentry
+    errors.ts        Error text (describeError, apiError) and classifySyncError
     exchange-rates.ts Cached exchange rates (open.er-api.com, shared DB)
     splitwise.ts     Splitwise API client (openapi-fetch)
     lunch-money.ts   Lunch Money API client (openapi-fetch)
