@@ -130,6 +130,14 @@ async function exhaustRequestBudget(): Promise<never> {
   throw new Error("request budget was not enforced");
 }
 
+// The logger's error lines, which it also reports to Sentry. Needs console.error spied on.
+function loggedErrors(): { msg: string; linkId: number }[] {
+  return vi.mocked(console.error).mock.calls.map(([line]) => {
+    const { msg, linkId } = JSON.parse(String(line)) as { msg: string; linkId: number };
+    return { msg, linkId };
+  });
+}
+
 const defaultUser: User = {
   id: 1,
   splitwiseUserId: "123",
@@ -595,6 +603,11 @@ describe("syncLink execute", () => {
       .mockResolvedValue({ transactions: [], skippedDuplicates: [] });
     mockUpdateTransactions.mockReset().mockResolvedValue({ missingIds: [] });
     mockGetCategories.mockReset().mockResolvedValue([]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("creates sync_log with status=success on successful sync", async () => {
@@ -627,6 +640,39 @@ describe("syncLink execute", () => {
     expect(logs).toHaveLength(1);
     expect(logs[0].status).toBe("error");
     expect(logs[0].errorMessage).toContain("LM API down");
+  });
+
+  it("logs a planning failure and records it in sync_log", async () => {
+    const link = await insertLink();
+    mockGetAllExpenses.mockRejectedValue(new Error("Splitwise API error (401)"));
+
+    await expect(syncLink(db, link, defaultUser)).rejects.toThrow("Splitwise API error (401)");
+
+    const logs = await db.select().from(syncLog).where(eq(syncLog.linkId, link.id));
+    expect(logs).toEqual([
+      expect.objectContaining({
+        status: "error",
+        errorMessage: expect.stringContaining("Splitwise API error (401)"),
+        finishedAt: expect.any(String),
+        expensesFetched: 0,
+        created: 0,
+        updated: 0,
+        deleted: 0,
+      }),
+    ]);
+    expect(loggedErrors()).toEqual([{ msg: "Sync failed", linkId: link.id }]);
+  });
+
+  it("leaves no trace of a failed dry run", async () => {
+    const link = await insertLink();
+    mockGetAllExpenses.mockRejectedValue(new Error("Splitwise API error (401)"));
+
+    await expect(syncLink(db, link, defaultUser, { dryRun: true })).rejects.toThrow(
+      "Splitwise API error (401)",
+    );
+
+    expect(await db.select().from(syncLog)).toEqual([]);
+    expect(loggedErrors()).toEqual([]);
   });
 
   it("updates lastSyncedAt cursor on success", async () => {
@@ -953,14 +999,17 @@ describe("syncUser", () => {
   });
 
   it("records a failed link and moves on to the next", async () => {
-    await addLink();
+    const first = await addLink();
     const second = await addLink({ splitwiseGroupId: "20" });
     mockGetAllExpenses.mockRejectedValueOnce(new Error("Splitwise is down"));
 
     await syncUser(1, rates);
 
     expect(mockGetAllExpenses).toHaveBeenCalledTimes(2);
-    expect(await syncLogStatuses()).toEqual({ [second.id]: ["success"] });
+    expect(await syncLogStatuses()).toEqual({
+      [first.id]: ["error"],
+      [second.id]: ["success"],
+    });
   });
 
   it("throws when the user's setup fails, so the queue retries it", async () => {

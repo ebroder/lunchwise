@@ -585,6 +585,16 @@ async function executeActions(
   return { created: creates.length, updated, deleted };
 }
 
+function countActions(
+  actions: PlannedAction[],
+): Pick<SyncResult, "created" | "updated" | "deleted"> {
+  return {
+    created: actions.filter((a) => a.type === "create").length,
+    updated: actions.filter((a) => a.type === "update").length,
+    deleted: actions.filter((a) => a.type === "delete").length,
+  };
+}
+
 export async function syncLink(
   db: UserDb,
   link: Link,
@@ -605,32 +615,24 @@ export async function syncLink(
     startDate: link.startDate,
   });
 
-  // Plan phase: decide what to do (shared logic for dry run and real sync)
-  const { actions, expenses_fetched, stamps } = await planSync(db, link, user, dryRun, log);
-
-  const result: SyncResult = {
-    expenses_fetched,
-    created: actions.filter((a) => a.type === "create").length,
-    updated: actions.filter((a) => a.type === "update").length,
-    deleted: actions.filter((a) => a.type === "delete").length,
-  };
-
   if (dryRun) {
-    result.actions = actions;
-    return result;
+    const { actions, expenses_fetched } = await planSync(db, link, user, dryRun, log);
+    return { expenses_fetched, ...countActions(actions), actions };
   }
 
-  // Execute phase: apply actions to LM and local DB
+  const result: SyncResult = { expenses_fetched: 0, created: 0, updated: 0, deleted: 0 };
   let logEntryId: number | undefined;
-  {
+
+  try {
     const [logEntry] = await db
       .insert(syncLog)
       .values({ linkId: link.id, startedAt: syncStartedAt })
       .returning({ id: syncLog.id });
     logEntryId = logEntry.id;
-  }
 
-  try {
+    const { actions, expenses_fetched, stamps } = await planSync(db, link, user, dryRun, log);
+    Object.assign(result, { expenses_fetched, ...countActions(actions) });
+
     const counts = await executeActions(db, link, apiKey, actions, log);
     Object.assign(result, counts);
 
@@ -838,7 +840,7 @@ export async function syncUser(userId: number, exchangeRates: ExchangeRates | nu
     } catch (err) {
       if (requestBudgetExceeded()) throw err;
       failures++;
-      // syncLink already logs the error, no need to duplicate
+      // syncLink has logged it and recorded it in sync_log
     }
   }
 
