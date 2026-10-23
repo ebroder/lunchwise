@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { SignJWT } from "jose";
 import { app } from "./app.js";
 import worker from "./index.js";
+import { markDbInitialized } from "./lib/auth.js";
 import { encrypt, resetKeyCache } from "./lib/crypto.js";
 import { getSharedDb, getUserDb, initUserDb, type SharedDb, type UserDb } from "./lib/db.js";
 import { initEnv } from "./lib/env.js";
@@ -630,6 +631,7 @@ describe("Dashboard", () => {
 
   it("adds one Turso request to each dashboard request", async () => {
     await seedUserWithLink({}, [rejectedKey]);
+    markDbInitialized("libsql://user-7.example");
     const baseline = await apiInvocation("GET", "/api/links/1");
 
     const me = await apiInvocation("GET", "/api/me");

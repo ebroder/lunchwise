@@ -95,6 +95,34 @@ describe("getSyncFailures", () => {
     expect(await getSyncFailures(db)).toEqual(new Map());
   });
 
+  it.each([
+    ["Lunch Money", LM_REJECTED],
+    ["Splitwise", SW_REJECTED],
+  ])("drops a %s rejection once any link has synced since", async (_name, errorMessage) => {
+    await addSync(1, "2026-10-23T12:00:00.000Z", "error", errorMessage);
+    await addSync(2, "2026-10-23T12:00:01.000Z", "success");
+
+    expect(await getSyncFailures(db)).toEqual(new Map());
+  });
+
+  it("keeps a rejection newer than another link's success", async () => {
+    await addSync(2, "2026-10-23T11:59:59.000Z", "success");
+    await addSync(1, "2026-10-23T12:00:00.000Z", "error", LM_REJECTED);
+
+    const failures = await getSyncFailures(db);
+
+    expect(failures.get(1)?.reason).toBe("lunch-money-key");
+  });
+
+  it("keeps any other failure after another link's success", async () => {
+    await addSync(1, "2026-10-23T12:00:00.000Z", "error", INTERRUPTED_MESSAGE);
+    await addSync(2, "2026-10-23T12:00:01.000Z", "success");
+
+    const failures = await getSyncFailures(db);
+
+    expect(failures.get(1)?.reason).toBe("interrupted");
+  });
+
   it("keeps a rejection of the current key", async () => {
     await db.update(credentials).set({
       lunchMoneyKeyUpdatedAt: "2026-10-23T11:00:00.000Z",

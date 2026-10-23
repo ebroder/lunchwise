@@ -58,7 +58,7 @@ export async function getSyncFailures(db: UserDb): Promise<Map<number, SyncFailu
     .where(ne(syncLog.status, "running"))
     .groupBy(syncLog.linkId);
   const failedLatest = and(eq(syncLog.status, "error"), inArray(syncLog.id, latestFinished));
-  const [rows, creds] = await db.batch([
+  const [rows, creds, successes] = await db.batch([
     db
       .select({
         linkId: syncLog.linkId,
@@ -74,17 +74,23 @@ export async function getSyncFailures(db: UserDb): Promise<Map<number, SyncFailu
       })
       .from(credentials)
       .limit(1),
+    db
+      .select({ startedAt: max(syncLog.startedAt) })
+      .from(syncLog)
+      .where(eq(syncLog.status, "success")),
   ]);
 
-  const replacedAt: Partial<Record<SyncFailureReason, string | null | undefined>> = {
-    "lunch-money-key": creds[0]?.lunchMoneyKeyUpdatedAt,
-    "splitwise-access": creds[0]?.splitwiseTokenUpdatedAt,
+  // a rejection stops counting once that credential is replaced or any link syncs after it
+  const lastSuccess = successes[0]?.startedAt;
+  const clearedAt: Partial<Record<SyncFailureReason, (string | null | undefined)[]>> = {
+    "lunch-money-key": [creds[0]?.lunchMoneyKeyUpdatedAt, lastSuccess],
+    "splitwise-access": [creds[0]?.splitwiseTokenUpdatedAt, lastSuccess],
   };
   const failures = new Map<number, SyncFailure>();
   for (const row of rows) {
     const reason = classifySyncError(row.errorMessage ?? "");
-    const replaced = replacedAt[reason];
-    if (replaced && Date.parse(row.startedAt) < Date.parse(replaced)) continue;
+    const startedAt = Date.parse(row.startedAt);
+    if (clearedAt[reason]?.some((at) => at && Date.parse(at) > startedAt)) continue;
     failures.set(row.linkId, {
       at: row.startedAt,
       reason,
