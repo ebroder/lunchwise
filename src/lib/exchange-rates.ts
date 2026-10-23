@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { SharedDb } from "./db.js";
 import { createLogger } from "./logger.js";
+import { countedFetch } from "./request-budget.js";
 
 const EXCHANGE_RATE_API_URL = "https://open.er-api.com/v6/latest/USD";
 
@@ -14,7 +15,7 @@ interface ExchangeRateApiResponse {
 }
 
 async function fetchFromApi(): Promise<ExchangeRateApiResponse> {
-  const res = await fetch(EXCHANGE_RATE_API_URL);
+  const res = await countedFetch(EXCHANGE_RATE_API_URL);
   if (!res.ok) {
     throw new Error(`Exchange rate API error: ${res.status} ${res.statusText}`);
   }

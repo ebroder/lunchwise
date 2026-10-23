@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { convertCurrency, type ExchangeRates } from "./exchange-rates.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import type { SharedDb } from "./db.js";
+import { convertCurrency, getExchangeRates, type ExchangeRates } from "./exchange-rates.js";
+import { requestsUsed, withRequestBudget } from "./request-budget.js";
+import * as sharedSchema from "./schema-shared.js";
 
 const rates: ExchangeRates = {
   USD: 1,
@@ -43,5 +48,31 @@ describe("convertCurrency", () => {
   it("negative amounts convert correctly", () => {
     const result = convertCurrency(-50, "USD", "EUR", rates);
     expect(result).toBeCloseTo(-44);
+  });
+});
+
+describe("getExchangeRates", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("counts the rate API's request against the request budget", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        result: "success",
+        time_last_update_unix: 0,
+        time_next_update_unix: 0,
+        rates: { USD: 1 },
+      }),
+    );
+    // in memory, so the API is the only request
+    const shared = drizzle({ client: createClient({ url: ":memory:" }), schema: sharedSchema });
+
+    const requests = await withRequestBudget(async () => {
+      await getExchangeRates(shared as SharedDb);
+      return requestsUsed();
+    });
+
+    expect(requests).toBe(1);
   });
 });
