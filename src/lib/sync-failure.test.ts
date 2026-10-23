@@ -105,6 +105,23 @@ describe("getSyncFailures", () => {
     expect(await getSyncFailures(db)).toEqual(new Map());
   });
 
+  it("keeps a rejection when another link only failed since", async () => {
+    await addSync(1, "2026-10-23T12:00:00.000Z", "error", LM_REJECTED);
+    await addSync(2, "2026-10-23T12:00:01.000Z", "error", "boom");
+
+    const failures = await getSyncFailures(db);
+
+    expect(failures.get(1)?.reason).toBe("lunch-money-key");
+  });
+
+  it("drops a rejection when another link's latest success came after it", async () => {
+    await addSync(2, "2026-10-23T11:00:00.000Z", "success");
+    await addSync(1, "2026-10-23T12:00:00.000Z", "error", LM_REJECTED);
+    await addSync(2, "2026-10-23T12:00:01.000Z", "success");
+
+    expect(await getSyncFailures(db)).toEqual(new Map());
+  });
+
   it("keeps a rejection newer than another link's success", async () => {
     await addSync(2, "2026-10-23T11:59:59.000Z", "success");
     await addSync(1, "2026-10-23T12:00:00.000Z", "error", LM_REJECTED);
