@@ -1,4 +1,4 @@
-import { eq, isNotNull, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getSharedDb, getUserDb, initUserDb, type UserDb } from "./db.js";
 import { users } from "./schema-shared.js";
 import { credentials, links, syncedTransactions, syncLog } from "./schema-user.js";
@@ -20,12 +20,13 @@ import {
   type LmInsertTransaction,
   type LmCategory,
 } from "./lunch-money.js";
-import { getExchangeRates, convertCurrency, type ExchangeRates } from "./exchange-rates.js";
+import { convertCurrency, type ExchangeRates } from "./exchange-rates.js";
 import type { User } from "./auth.js";
 import { decrypt } from "./crypto.js";
 import { stemmer } from "stemmer";
 import { createLogger } from "./logger.js";
 import { describeError } from "./errors.js";
+import { requestBudgetExceeded } from "./request-budget.js";
 
 type Link = typeof links.$inferSelect;
 
@@ -771,6 +772,7 @@ export async function syncBalances(
         currency: targetCurrency,
       });
     } catch (err) {
+      if (requestBudgetExceeded()) throw err;
       log.error("Balance sync failed for account", {
         accountId,
         error: describeError(err),
@@ -780,101 +782,74 @@ export async function syncBalances(
   }
 }
 
-export async function syncAllEnabled(): Promise<void> {
-  const log = createLogger({ source: "cron" });
-  const cronStart = Date.now();
+// Throws when the user's setup fails or the request budget runs out. A failed link doesn't
+// throw, since syncLink records it in sync_log.
+export async function syncUser(userId: number, exchangeRates: ExchangeRates | null): Promise<void> {
+  const log = createLogger({ userId });
 
-  const shared = getSharedDb();
-  const allUsers = await shared.select().from(users).where(isNotNull(users.tursoDbUrl));
-
-  log.info("Cron started", { users: allUsers.length });
-
-  // Fetch exchange rates once for all balance syncs this run (cached in shared DB)
-  let exchangeRates: ExchangeRates | null = null;
-  try {
-    exchangeRates = await getExchangeRates(shared);
-    log.info("Exchange rates loaded", { currencies: Object.keys(exchangeRates).length });
-  } catch (err) {
-    log.warn("Failed to load exchange rates, skipping balance sync", {
-      error: describeError(err),
-    });
+  const [row] = await getSharedDb().select().from(users).where(eq(users.id, userId));
+  if (!row?.tursoDbUrl) {
+    log.warn("Skipping user: no database");
+    return;
   }
 
-  let totalLinks = 0;
+  const userDb = getUserDb(row.tursoDbUrl);
+  await initUserDb(userDb);
+
+  // Clean up stale sync_log entries from interrupted runs
+  const cleaned = await userDb.run(sql`
+    UPDATE sync_log
+    SET status = 'error', finished_at = datetime('now'), error_message = 'Process interrupted'
+    WHERE status = 'running'
+  `);
+  if (cleaned.rowsAffected > 0) {
+    log.warn("Cleaned stale sync_log entries", { count: cleaned.rowsAffected });
+  }
+
+  const creds = await userDb.select().from(credentials).limit(1);
+  const cred = creds[0];
+  if (!cred?.lunchMoneyApiKey) {
+    log.warn("Skipping user: no Lunch Money API key");
+    return;
+  }
+
+  const enabledLinks = await userDb.select().from(links).where(eq(links.enabled, 1));
+  log.info("Processing user", { enabledLinks: enabledLinks.length });
+
+  const user: User = {
+    id: row.id,
+    splitwiseUserId: row.splitwiseUserId,
+    tursoDbUrl: row.tursoDbUrl,
+    splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
+    lunchMoneyApiKey: await decrypt(cred.lunchMoneyApiKey),
+  };
+
   let successes = 0;
   let failures = 0;
-  let skippedUsers = 0;
-
-  for (const row of allUsers) {
-    const userLog = log.with({ userId: row.id });
+  for (const [i, link] of enabledLinks.entries()) {
+    if (i > 0) {
+      await new Promise<void>((r) => {
+        setTimeout(r, 500);
+      });
+    }
     try {
-      const userDb = getUserDb(row.tursoDbUrl!);
-      await initUserDb(userDb);
-
-      // Clean up stale sync_log entries from interrupted runs
-      const cleaned = await userDb.run(sql`
-        UPDATE sync_log
-        SET status = 'error', finished_at = datetime('now'), error_message = 'Process interrupted'
-        WHERE status = 'running'
-      `);
-      if (cleaned.rowsAffected > 0) {
-        userLog.warn("Cleaned stale sync_log entries", { count: cleaned.rowsAffected });
-      }
-
-      const creds = await userDb.select().from(credentials).limit(1);
-      const cred = creds[0];
-      if (!cred?.lunchMoneyApiKey) {
-        userLog.warn("Skipping user: no Lunch Money API key");
-        continue;
-      }
-
-      const enabledLinks = await userDb.select().from(links).where(eq(links.enabled, 1));
-
-      userLog.info("Processing user", { enabledLinks: enabledLinks.length });
-      totalLinks += enabledLinks.length;
-
-      const user: User = {
-        id: row.id,
-        splitwiseUserId: row.splitwiseUserId,
-        tursoDbUrl: row.tursoDbUrl!,
-        splitwiseAccessToken: await decrypt(cred.splitwiseAccessToken),
-        lunchMoneyApiKey: await decrypt(cred.lunchMoneyApiKey),
-      };
-
-      for (const link of enabledLinks) {
-        try {
-          await syncLink(userDb, link, user);
-          successes++;
-        } catch {
-          failures++;
-          // syncLink already logs the error, no need to duplicate
-        }
-
-        await new Promise<void>((r) => {
-          setTimeout(r, 500);
-        });
-      }
-
-      // Balance sync (after all transaction syncs for this user)
-      if (exchangeRates) {
-        try {
-          await syncBalances(enabledLinks, user, exchangeRates, userLog);
-        } catch (err) {
-          userLog.error("Balance sync failed", { error: describeError(err), cause: err });
-        }
-      }
+      await syncLink(userDb, link, user);
+      successes++;
     } catch (err) {
-      skippedUsers++;
-      userLog.error("Skipping user: setup failed", { error: describeError(err), cause: err });
+      if (requestBudgetExceeded()) throw err;
+      failures++;
+      // syncLink already logs the error, no need to duplicate
     }
   }
 
-  log.info("Cron complete", {
-    users: allUsers.length,
-    totalLinks,
-    successes,
-    failures,
-    skippedUsers,
-    elapsedMs: Date.now() - cronStart,
-  });
+  if (exchangeRates) {
+    try {
+      await syncBalances(enabledLinks, user, exchangeRates, log);
+    } catch (err) {
+      if (requestBudgetExceeded()) throw err;
+      log.error("Balance sync failed", { error: describeError(err), cause: err });
+    }
+  }
+
+  log.info("User sync complete", { links: enabledLinks.length, successes, failures });
 }

@@ -16,6 +16,16 @@ directory = "./dist/client"
 [triggers]
 crons = ["0 */2 * * *"]
 
+[[queues.producers]]
+binding = "SYNC_QUEUE"
+queue = "lunchwise-sync"
+
+[[queues.consumers]]
+queue = "lunchwise-sync"
+max_batch_size = 1
+max_retries = 3
+retry_delay = 300
+
 [[ratelimits]]
 name = "RATE_LIMITER"
 namespace_id = "1001"

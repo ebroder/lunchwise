@@ -1,11 +1,20 @@
-import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { createClient } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import * as sharedSchema from "./schema-shared.js";
 import * as userSchema from "./schema-user.js";
-import { syncedTransactions, syncLog, links } from "./schema-user.js";
-import { initUserDb, type UserDb } from "./db.js";
-import { syncLink, syncBalances } from "./sync.js";
+import { credentials, syncedTransactions, syncLog, links } from "./schema-user.js";
+import { getSharedDb, getUserDb, initUserDb, type SharedDb, type UserDb } from "./db.js";
+import { syncLink, syncBalances, syncUser } from "./sync.js";
+import { env } from "./env.js";
+import { encrypt } from "./crypto.js";
+import {
+  countedFetch,
+  REQUEST_BUDGET,
+  RequestBudgetExceededError,
+  withRequestBudget,
+} from "./request-budget.js";
 import {
   getUserShare,
   getAllExpenses,
@@ -24,6 +33,11 @@ import {
 } from "./lunch-money.js";
 import { convertCurrency, type ExchangeRates } from "./exchange-rates.js";
 import type { User } from "./auth.js";
+
+vi.mock("./db.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./db.js")>();
+  return { ...mod, getSharedDb: vi.fn(), getUserDb: vi.fn() };
+});
 
 vi.mock("./splitwise.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./splitwise.js")>();
@@ -104,6 +118,16 @@ function makeLink(
     updatedAt: "",
     ...overrides,
   };
+}
+
+// Makes requests until the budget refuses one, with the network stubbed out.
+async function exhaustRequestBudget(): Promise<never> {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}"));
+  for (let i = 0; i < REQUEST_BUDGET; i++) {
+    await countedFetch("https://example.com/");
+  }
+  await countedFetch("https://example.com/");
+  throw new Error("request budget was not enforced");
 }
 
 const defaultUser: User = {
@@ -816,6 +840,172 @@ describe("syncBalances", () => {
 
     expect(mockGetUser).not.toHaveBeenCalled();
     expect(mockUpdateAccountBalance).not.toHaveBeenCalled();
+  });
+
+  it("stops at the first account once the request budget runs out", async () => {
+    const link1 = makeLink({ id: 1, splitwiseGroupId: "10", lmAccountId: 100 });
+    const link2 = makeLink({ id: 2, splitwiseGroupId: "20", lmAccountId: 200 });
+    mockGetGroup.mockImplementation(exhaustRequestBudget);
+
+    await expect(
+      withRequestBudget(() => syncBalances([link1, link2], defaultUser, rates, log)),
+    ).rejects.toBeInstanceOf(RequestBudgetExceededError);
+
+    expect(mockGetGroup).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
+  });
+});
+
+describe("syncUser", () => {
+  const rates: ExchangeRates = { USD: 1 };
+  let userDb: UserDb;
+
+  async function addLink(overrides: Partial<typeof links.$inferInsert> = {}) {
+    const [row] = await userDb
+      .insert(links)
+      .values({ splitwiseGroupId: "10", lmAccountId: 100, ...overrides })
+      .returning();
+    return row;
+  }
+
+  async function syncLogStatuses(): Promise<Record<number, string[]>> {
+    const rows = await userDb.select().from(syncLog);
+    const byLink: Record<number, string[]> = {};
+    for (const row of rows) {
+      (byLink[row.linkId] ??= []).push(row.status);
+    }
+    return byLink;
+  }
+
+  beforeEach(async () => {
+    env.ENCRYPTION_KEYS = JSON.stringify({ "1": btoa("k".repeat(32)) });
+
+    const shared = drizzle({ client: createClient({ url: ":memory:" }), schema: sharedSchema });
+    await shared.run(sql`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        splitwise_user_id TEXT NOT NULL UNIQUE,
+        turso_db_url TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    await shared.insert(sharedSchema.users).values([
+      { id: 1, splitwiseUserId: "123", tursoDbUrl: "libsql://user-1.example" },
+      { id: 2, splitwiseUserId: "456", tursoDbUrl: null },
+    ]);
+
+    userDb = createTestDb();
+    await initUserDb(userDb);
+    await userDb.insert(credentials).values({
+      splitwiseAccessToken: await encrypt("sw-token"),
+      lunchMoneyApiKey: await encrypt("lm-key"),
+    });
+
+    vi.mocked(getSharedDb)
+      .mockReset()
+      .mockReturnValue(shared as SharedDb);
+    vi.mocked(getUserDb).mockReset().mockReturnValue(userDb);
+    mockGetAllExpenses.mockReset().mockResolvedValue([]);
+    mockGetTransactions.mockReset().mockResolvedValue([]);
+    mockGetCategories.mockReset().mockResolvedValue([]);
+    mockGetGroup.mockReset().mockResolvedValue(makeGroup(10, [{ currency: "USD", amount: "5" }]));
+    mockGetUser.mockReset().mockResolvedValue({ primary_currency: "usd" });
+    mockUpdateAccountBalance.mockReset().mockResolvedValue(void 0);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("syncs each enabled link, then balances", async () => {
+    const first = await addLink({ syncBalance: 1 });
+    const second = await addLink({ splitwiseGroupId: "20" });
+    await addLink({ enabled: 0 });
+
+    await syncUser(1, rates);
+
+    expect(vi.mocked(getUserDb)).toHaveBeenCalledWith("libsql://user-1.example");
+    expect(mockGetAllExpenses).toHaveBeenCalledWith("sw-token", expect.anything());
+    expect(await syncLogStatuses()).toEqual({
+      [first.id]: ["success"],
+      [second.id]: ["success"],
+    });
+    expect(mockUpdateAccountBalance).toHaveBeenCalledWith("lm-key", 100, 5);
+  });
+
+  it("skips balance sync without exchange rates", async () => {
+    await addLink({ syncBalance: 1 });
+
+    await syncUser(1, null);
+
+    expect(mockUpdateAccountBalance).not.toHaveBeenCalled();
+  });
+
+  it("marks runs left in progress as interrupted", async () => {
+    const link = await addLink({ enabled: 0 });
+    await userDb.insert(syncLog).values({ linkId: link.id, startedAt: "2026-01-01T00:00:00Z" });
+
+    await syncUser(1, rates);
+
+    const [row] = await userDb.select().from(syncLog);
+    expect(row).toMatchObject({ status: "error", errorMessage: "Process interrupted" });
+  });
+
+  it("records a failed link and moves on to the next", async () => {
+    await addLink();
+    const second = await addLink({ splitwiseGroupId: "20" });
+    mockGetAllExpenses.mockRejectedValueOnce(new Error("Splitwise is down"));
+
+    await syncUser(1, rates);
+
+    expect(mockGetAllExpenses).toHaveBeenCalledTimes(2);
+    expect(await syncLogStatuses()).toEqual({ [second.id]: ["success"] });
+  });
+
+  it("throws when the user's setup fails, so the queue retries it", async () => {
+    userDb.$client.close();
+
+    await expect(syncUser(1, rates)).rejects.toThrow();
+  });
+
+  it("stops at the first link once the request budget runs out", async () => {
+    await addLink();
+    await addLink({ splitwiseGroupId: "20" });
+    mockGetAllExpenses.mockImplementation(exhaustRequestBudget);
+
+    await expect(withRequestBudget(() => syncUser(1, rates))).rejects.toBeInstanceOf(
+      RequestBudgetExceededError,
+    );
+
+    expect(mockGetAllExpenses).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops when the request budget runs out during balance sync", async () => {
+    await addLink({ syncBalance: 1 });
+    mockGetUser.mockImplementation(exhaustRequestBudget);
+
+    await expect(withRequestBudget(() => syncUser(1, rates))).rejects.toBeInstanceOf(
+      RequestBudgetExceededError,
+    );
+  });
+
+  it("skips a user without a Lunch Money API key", async () => {
+    await addLink();
+    await userDb.update(credentials).set({ lunchMoneyApiKey: null });
+
+    await syncUser(1, rates);
+
+    expect(mockGetAllExpenses).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["has no database", 2],
+    ["no longer exists", 3],
+  ])("skips a user who %s", async (_, userId) => {
+    await syncUser(userId, rates);
+
+    expect(vi.mocked(getUserDb)).not.toHaveBeenCalled();
   });
 });
 

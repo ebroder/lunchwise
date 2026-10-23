@@ -4,8 +4,9 @@ Working mode: delegated. Evan reviews the product, not the diff, so your tests a
 
 Syncs shared expenses from Splitwise to Lunch Money. Users authenticate
 via Splitwise OAuth, provide a Lunch Money API key, then configure "links"
-that map a Splitwise group to a Lunch Money manual account. A background
-cron syncs enabled links every 2 hours.
+that map a Splitwise group to a Lunch Money manual account. Every 2 hours a
+cron queues one sync per user, and a queue consumer syncs that user's enabled
+links.
 
 ## Architecture
 
@@ -23,18 +24,42 @@ Schema is defined in Drizzle ORM (`src/lib/schema-shared.ts`,
 `src/lib/schema-user.ts`). Shared DB schema changes are applied manually
 via `turso db shell`. Per-user DB migrations are versioned in `initUserDb()`
 (in `db.ts`) using a `schema_version` table, and run automatically on auth
-and cron (deduplicated per isolate via a module-level Set).
+and on each user's background sync.
 
 **Environment**: Workers env bindings flow through `src/lib/env.ts` (a
 mutable module-level object populated by the entry point before each
 request). Library code imports `env` from there rather than using
-`process.env`.
+`process.env`. Only string vars and secrets land there; `src/index.tsx`
+passes object bindings such as the `SYNC_QUEUE` producer explicitly.
+
+**Background sync**: The `0 */2 * * *` cron (`scheduled` in `src/index.tsx`)
+only queues work. `enqueueUserSyncs` (`src/lib/sync-queue.ts`) sends one
+`lunchwise-sync` message per user with a database, carrying the exchange rates
+it loaded once so consumers don't spend requests on them (or `null`, which
+skips balance sync). The `queue` handler gets one message per invocation
+(`max_batch_size = 1`) and runs `syncUser` inside `withRequestBudget`, so each
+user's sync runs in its own invocation with its own count. Cloudflare's docs
+don't say outright that each consumer invocation gets a fresh 50-subrequest
+allowance, but that's the assumption this design rests on.
+
+- A user whose setup throws (a transient Turso error, say) is retried after
+  `retry_delay` (5 minutes), up to `max_retries`.
+- A failed link doesn't trigger a retry, since `syncLink` already recorded it
+  in `sync_log`.
+- A run that hits the request budget reports a Sentry error naming the user
+  and request count, then acks, because a retry would stop at the same point.
+  Code that catches and carries on in a user sync checks
+  `requestBudgetExceeded()` and rethrows, so the run stops at the first
+  refusal.
+- Every run logs its request count ("User sync finished"), and one above 35
+  also sends a Sentry warning with the `request-budget-warning` fingerprint,
+  so they all group into one issue.
 
 ## Project layout
 
 ```
 src/
-  index.tsx          Workers entry point (fetch + scheduled handlers)
+  index.tsx          Workers entry point (fetch, scheduled and queue handlers)
   app.tsx            Hono app, route mounting, JSX renderer
   components/        Shared layout (server-rendered pages)
   routes/
@@ -49,6 +74,7 @@ src/
     logger.ts        Structured JSON logger (@sentry/cloudflare, LOG_LEVEL via env)
     turso.ts         Turso Platform API (creating per-user databases)
     sync.ts          Core sync logic (Splitwise -> Lunch Money, balance sync)
+    sync-queue.ts    Cron fan-out to the sync queue, and its consumer
     exchange-rates.ts Cached exchange rates (open.er-api.com, shared DB)
     splitwise.ts     Splitwise API client (openapi-fetch)
     lunch-money.ts   Lunch Money API client (openapi-fetch)
@@ -109,6 +135,13 @@ Cloudflare Workers. Deployed via `wrangler deploy` (or push to `main` triggers
 GitHub Actions). Config is in `wrangler.toml`. Secrets are set via
 `wrangler secret put`.
 
+The sync queue has to exist before the first deploy that binds it (one-time
+setup):
+
+```
+npx wrangler queues create lunchwise-sync
+```
+
 Required secrets: `TURSO_SHARED_DB_URL`, `TURSO_AUTH_TOKEN`,
 `TURSO_PLATFORM_API_TOKEN`, `TURSO_ORG`, `TURSO_GROUP`, `SESSION_SECRET`,
 `SPLITWISE_CLIENT_ID`, `SPLITWISE_CLIENT_SECRET`, `APP_URL`, `NODE_ENV`.
@@ -143,8 +176,9 @@ API errors, and the cron handler emit structured logs with context fields
   raw SQL query returns no rows. Use `.all()` and take `[0]` instead.
 - The `initSharedDb()` function was removed. Shared DB schema changes need
   to be applied manually via `turso db shell`.
-- `initUserDb()` runs on auth and cron (not just signup) so existing users
-  pick up new migrations. Deduplicated per isolate with a `Set<string>`.
+- `initUserDb()` runs on auth and on every background sync (not just signup)
+  so existing users pick up new migrations. Auth deduplicates it per isolate
+  with a `Set<string>`.
 - Lunchwise runs on the Workers Free plan, which allows **50 outgoing
   subrequests** per invocation (every `fetch`, including each Turso query,
   each Splitwise and Lunch Money call, and each Sentry send) plus 1,000 to
@@ -180,10 +214,11 @@ API errors, and the cron handler emit structured logs with context fields
   `src/index.test.ts` checks the envelopes Sentry actually sends. If a Sentry
   upgrade breaks that test, fix the config rather than the test.
 - Send cron check-ins with `Sentry.captureCheckIn` from the `scheduled`
-  handler's own scope, not `Sentry.withMonitor`, and leave the sync in
-  `ctx.waitUntil`. `withMonitor` runs its callback in a forked isolation scope
-  without the SDK's per-invocation state, so (seen in `@sentry/cloudflare` 11.4 through 11.8)
-  the closing check-in is sent outside `waitUntil`, the runtime cancels it, and
-  the monitor reports every run as a timeout. Awaiting the sync instead holds
-  the `in_progress` check-in until the invocation ends, past the monitor's
-  5-minute margin on a long sync. `src/index.test.ts` covers both.
+  handler's own scope, not `Sentry.withMonitor`, and leave the cron's work
+  (queueing the user syncs) in `ctx.waitUntil`. `withMonitor` runs its
+  callback in a forked isolation scope without the SDK's per-invocation state,
+  so (seen in `@sentry/cloudflare` 11.4 through 11.8) the closing check-in is
+  sent outside `waitUntil`, the runtime cancels it, and the monitor reports
+  every run as a timeout. Awaiting the work instead holds the `in_progress`
+  check-in until the invocation ends. `src/index.test.ts` covers both. The
+  monitor only covers queueing; user syncs report through Sentry errors.

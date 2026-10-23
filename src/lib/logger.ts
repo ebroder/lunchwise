@@ -15,7 +15,8 @@ type Fields = Record<string, unknown>;
 export interface Logger {
   debug(msg: string, fields?: Fields): void;
   info(msg: string, fields?: Fields): void;
-  warn(msg: string, fields?: Fields): void;
+  // with `sentry`, also reports a Sentry warning grouped under that fingerprint
+  warn(msg: string, fields?: Fields, sentry?: { fingerprint: string[] }): void;
   error(msg: string, fields?: Fields & { cause?: unknown }): void;
   with(context: Fields): Logger;
 }
@@ -46,8 +47,18 @@ export function createLogger(context: Fields = {}): Logger {
     info(msg, fields) {
       if (getMinLevel() <= LEVELS.info) emit("info", msg, { ...context, ...fields });
     },
-    warn(msg, fields) {
-      if (getMinLevel() <= LEVELS.warn) emit("warn", msg, { ...context, ...fields });
+    warn(msg, fields, sentry) {
+      if (getMinLevel() > LEVELS.warn) return;
+      const merged = { ...context, ...fields };
+      emit("warn", msg, merged);
+
+      if (sentry) {
+        Sentry.withScope((scope) => {
+          scope.setExtras(merged);
+          scope.setFingerprint(sentry.fingerprint);
+          Sentry.captureMessage(msg, "warning");
+        });
+      }
     },
     error(msg, fields) {
       const { cause, ...rest } = { ...context, ...fields };

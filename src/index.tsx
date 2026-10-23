@@ -2,12 +2,23 @@ import * as Sentry from "@sentry/cloudflare";
 import { app } from "./app.js";
 import { resetKeyCache } from "./lib/crypto.js";
 import { initEnv } from "./lib/env.js";
-import { syncAllEnabled } from "./lib/sync.js";
+import {
+  enqueueUserSyncs,
+  processSyncBatch,
+  SYNC_QUEUE,
+  type UserSyncMessage,
+} from "./lib/sync-queue.js";
 import { describeError } from "./lib/errors.js";
 import { createLogger } from "./lib/logger.js";
 
+interface WorkerEnv {
+  SENTRY_DSN?: string;
+  SYNC_QUEUE: Queue<UserSyncMessage>;
+  [key: string]: unknown;
+}
+
 export default Sentry.withSentry(
-  (env: Record<string, string>) => ({
+  (env: WorkerEnv) => ({
     dsn: env.SENTRY_DSN,
     tracesSampleRate: 1.0,
     // Unset fields default to collecting request bodies, which include users' Lunch Money API keys.
@@ -27,11 +38,7 @@ export default Sentry.withSentry(
     },
   }),
   {
-    async fetch(
-      request: Request,
-      workerEnv: Record<string, string>,
-      ctx: ExecutionContext,
-    ): Promise<Response> {
+    async fetch(request: Request, workerEnv: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
       initEnv(workerEnv);
       resetKeyCache();
       return app.fetch(request, workerEnv, ctx);
@@ -39,7 +46,7 @@ export default Sentry.withSentry(
 
     async scheduled(
       _event: ScheduledController,
-      workerEnv: Record<string, string>,
+      workerEnv: WorkerEnv,
       ctx: ExecutionContext,
     ): Promise<void> {
       initEnv(workerEnv);
@@ -67,7 +74,7 @@ export default Sentry.withSentry(
         });
       };
       ctx.waitUntil(
-        syncAllEnabled().then(
+        enqueueUserSyncs(workerEnv.SYNC_QUEUE).then(
           () => finish("ok"),
           (err) => {
             log.error("Cron handler failed", { error: describeError(err), cause: err });
@@ -76,5 +83,18 @@ export default Sentry.withSentry(
         ),
       );
     },
-  } satisfies ExportedHandler<Record<string, string>>,
+
+    async queue(
+      batch: MessageBatch<UserSyncMessage>,
+      workerEnv: WorkerEnv,
+      _ctx: ExecutionContext,
+    ): Promise<void> {
+      initEnv(workerEnv);
+      resetKeyCache();
+      if (batch.queue !== SYNC_QUEUE) {
+        throw new Error(`No consumer for queue ${batch.queue}`);
+      }
+      await processSyncBatch(batch);
+    },
+  } satisfies ExportedHandler<WorkerEnv, UserSyncMessage>,
 );
