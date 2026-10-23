@@ -1,7 +1,15 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { sql } from "drizzle-orm";
 import worker from "./index.js";
-import { createLogger } from "./lib/logger.js";
+import { encrypt, resetKeyCache } from "./lib/crypto.js";
+import { getSharedDb, getUserDb, initUserDb, type SharedDb, type UserDb } from "./lib/db.js";
+import { initEnv } from "./lib/env.js";
 import { countedFetch, REQUEST_BUDGET, REQUEST_WARNING } from "./lib/request-budget.js";
+import * as sharedSchema from "./lib/schema-shared.js";
+import * as userSchema from "./lib/schema-user.js";
+import { getAllExpenses } from "./lib/splitwise.js";
 import { syncUser } from "./lib/sync.js";
 import {
   enqueueUserSyncs,
@@ -18,12 +26,28 @@ vi.mock("./app.js", () => ({
   },
 }));
 
-vi.mock("./lib/sync.js", () => ({ syncUser: vi.fn() }));
+vi.mock("./lib/sync.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./lib/sync.js")>();
+  return { ...mod, syncUser: vi.fn() };
+});
+
+vi.mock("./lib/db.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./lib/db.js")>();
+  return { ...mod, getSharedDb: vi.fn(), getUserDb: vi.fn() };
+});
+
+vi.mock("./lib/splitwise.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./lib/splitwise.js")>();
+  return { ...mod, getAllExpenses: vi.fn() };
+});
 
 vi.mock("./lib/sync-queue.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./lib/sync-queue.js")>();
   return { ...mod, enqueueUserSyncs: vi.fn() };
 });
+
+const { syncUser: realSyncUser } =
+  await vi.importActual<typeof import("./lib/sync.js")>("./lib/sync.js");
 
 const SENTRY_HOST = "sentry.example.com";
 
@@ -36,7 +60,7 @@ const workerEnv = {
   SPLITWISE_CLIENT_ID: "client-id",
   SPLITWISE_CLIENT_SECRET: "client-secret",
   APP_URL: "https://example.com",
-  ENCRYPTION_KEYS: JSON.stringify({ "1": "dGVzdGtleXRlc3RrZXkxMjM0NTY3ODk=" }),
+  ENCRYPTION_KEYS: JSON.stringify({ "1": btoa("k".repeat(32)) }),
   TURSO_PLATFORM_API_TOKEN: "platform-token",
   TURSO_ORG: "test-org",
   TURSO_GROUP: "test-group",
@@ -150,7 +174,7 @@ async function cronCheckIns(
 }
 
 async function queueInvocation(
-  sync: () => Promise<void>,
+  sync: typeof syncUser,
   queue = SYNC_QUEUE,
   body: UserSyncMessage = { userId: 7, exchangeRates: null },
 ) {
@@ -175,6 +199,43 @@ async function queueInvocation(
   await runtime.run((ctx) => worker.queue?.(batch, workerEnv, ctx));
 
   return { message, delivered: runtime.delivered, fetches: runtime.fetches() };
+}
+
+// User 7 with one enabled link. In-memory databases make no requests, so they don't count.
+async function seedUserWithLink(): Promise<UserDb> {
+  initEnv(workerEnv);
+  resetKeyCache();
+
+  const shared = drizzle({ client: createClient({ url: ":memory:" }), schema: sharedSchema });
+  await shared.run(sql`
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      splitwise_user_id TEXT NOT NULL UNIQUE,
+      turso_db_url TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  await shared
+    .insert(sharedSchema.users)
+    .values({ id: 7, splitwiseUserId: "123", tursoDbUrl: "libsql://user-7.example" });
+
+  const userDb = drizzle({
+    client: createClient({ url: ":memory:" }),
+    schema: userSchema,
+  }) as UserDb;
+  await initUserDb(userDb);
+  await userDb.insert(userSchema.credentials).values({
+    splitwiseAccessToken: await encrypt("sw-token"),
+    lunchMoneyApiKey: await encrypt("lm-key"),
+  });
+  await userDb
+    .insert(userSchema.links)
+    .values({ splitwiseGroupId: "10", lmAccountId: 100, lastSyncedAt: "2026-01-01T00:00:00Z" });
+
+  vi.mocked(getSharedDb).mockReturnValue(shared as SharedDb);
+  vi.mocked(getUserDb).mockReturnValue(userDb);
+  return userDb;
 }
 
 async function makeRequests(count: number): Promise<void> {
@@ -234,21 +295,28 @@ describe("Sentry reports", () => {
     );
   });
 
-  it("report a user who ran out of requests within the Free plan's 50 subrequests", async () => {
-    const { message, delivered, fetches } = await queueInvocation(async () => {
-      try {
-        await makeRequests(REQUEST_BUDGET + 1);
-      } catch (err) {
-        createLogger({ userId: 7 }).error("Sync failed", { cause: err });
-        throw err;
+  it("report a user who ran out of requests once, within the Free plan's 50 subrequests", async () => {
+    const userDb = await seedUserWithLink();
+    vi.mocked(getAllExpenses).mockImplementation(async () => {
+      for (;;) {
+        await countedFetch("https://secure.splitwise.com/api/v3.0/get_expenses");
       }
     });
 
+    const { message, delivered, fetches } = await queueInvocation(realSyncUser);
+
     expect(message.ack).toHaveBeenCalled();
-    const sent = delivered.join("\n");
-    expect(sent).toContain("Sync failed");
-    expect(sent).toContain(`Sync for user 7 ran out of requests after ${REQUEST_BUDGET} requests`);
+    const errors = sentryItems(delivered).flatMap((item) =>
+      item.level === "error"
+        ? [(item.exception as { values: { value: string }[] }).values[0].value]
+        : [],
+    );
+    expect(errors).toEqual([
+      `Sync for user 7 ran out of requests after ${REQUEST_BUDGET} requests`,
+    ]);
     expect(fetches).toBeLessThanOrEqual(50);
+    const syncLogs = await userDb.select().from(userSchema.syncLog);
+    expect(syncLogs.map((row) => row.status)).toEqual(["running"]);
   });
 
   it("deliver a dead-lettered sync's report with the user id and nothing else from the message", async () => {

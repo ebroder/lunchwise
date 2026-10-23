@@ -708,6 +708,58 @@ describe("syncLink execute", () => {
     expect(expenseIds).toEqual(["2001", "2002"]);
   });
 
+  describe("when the request budget runs out", () => {
+    beforeEach(() => {
+      mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+      mockInsertTransactions.mockResolvedValue({
+        transactions: [{ id: 9001, external_id: "1001" }],
+        skippedDuplicates: [],
+      });
+    });
+
+    it.each([
+      [
+        "planning",
+        () => {
+          mockGetAllExpenses.mockImplementation(exhaustRequestBudget);
+          return insertLink();
+        },
+      ],
+      [
+        "writing to Lunch Money",
+        () => {
+          mockInsertTransactions.mockImplementation(exhaustRequestBudget);
+          return insertLink();
+        },
+      ],
+      [
+        "recording the changes",
+        () => {
+          vi.spyOn(db.$client, "batch").mockImplementation(exhaustRequestBudget);
+          return insertLink();
+        },
+      ],
+      [
+        "stamping backfilled rows",
+        () => {
+          mockGetTransactions.mockResolvedValue([{ id: 5000, external_id: "1001", amount: "10" }]);
+          vi.spyOn(db.$client, "batch").mockImplementation(exhaustRequestBudget);
+          return insertLink({ lastSyncedAt: null });
+        },
+      ],
+    ])("while %s, rethrows without logging or writing sync_log", async (_, setUp) => {
+      const link = await setUp();
+
+      await expect(withRequestBudget(() => syncLink(db, link, defaultUser))).rejects.toBeInstanceOf(
+        RequestBudgetExceededError,
+      );
+
+      expect(loggedErrors()).toEqual([]);
+      const logs = await db.select().from(syncLog);
+      expect(logs.map((row) => row.status)).toEqual(["running"]);
+    });
+  });
+
   describe("when the LM transaction has been deleted", () => {
     it("stops tracking an edited expense instead of failing the sync", async () => {
       const link = await insertLink();

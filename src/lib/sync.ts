@@ -570,6 +570,7 @@ async function executeActions(
       }
       log.info("DB writes complete", { statements: dbStmts.length });
     } catch (err) {
+      if (requestBudgetExceeded()) throw err;
       log.error("DB writes failed after LM operations completed", {
         error: describeError(err),
         cause: err,
@@ -650,6 +651,7 @@ export async function syncLink(
         }
         log.info("Stamped backfill rows", { count: stamps.length });
       } catch (err) {
+        if (requestBudgetExceeded()) throw err;
         log.error("Stamp writes failed after sync completed", {
           error: describeError(err),
           cause: err,
@@ -683,6 +685,8 @@ export async function syncLink(
       deleted: counts.deleted,
     });
   } catch (err) {
+    // a sync_log write would be refused, and the consumer's budget report needs the Sentry headroom
+    if (requestBudgetExceeded()) throw err;
     log.error("Sync failed", { error: describeError(err), cause: err });
     if (logEntryId !== undefined) {
       try {

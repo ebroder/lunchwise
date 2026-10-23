@@ -48,9 +48,11 @@ allowance, but that's the assumption this design rests on.
   in `sync_log`.
 - A run that hits the request budget reports a Sentry error naming the user
   and request count, then acks, because a retry would stop at the same point.
-  Code that catches and carries on in a user sync checks
-  `requestBudgetExceeded()` and rethrows, so the run stops at the first
-  refusal.
+  Code in a user sync that catches errors (to carry on, or to log them
+  first) checks `requestBudgetExceeded()` and rethrows straight away, so the
+  run stops at the first refusal and the consumer's report is its only Sentry
+  error. The link's `sync_log` row stays `running` until the next run marks
+  it interrupted.
 - Every run logs its request count ("User sync finished"), and one above 35
   also sends a Sentry warning with the `request-budget-warning` fingerprint,
   so they all group into one issue.
