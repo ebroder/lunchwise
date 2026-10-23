@@ -3,7 +3,12 @@ import worker from "./index.js";
 import { createLogger } from "./lib/logger.js";
 import { countedFetch, REQUEST_BUDGET, REQUEST_WARNING } from "./lib/request-budget.js";
 import { syncUser } from "./lib/sync.js";
-import { enqueueUserSyncs, SYNC_QUEUE, type UserSyncMessage } from "./lib/sync-queue.js";
+import {
+  enqueueUserSyncs,
+  SYNC_DEAD_LETTER_QUEUE,
+  SYNC_QUEUE,
+  type UserSyncMessage,
+} from "./lib/sync-queue.js";
 
 vi.mock("./app.js", () => ({
   app: {
@@ -144,18 +149,22 @@ async function cronCheckIns(
   return { duringSync, delivered: statuses() };
 }
 
-async function queueInvocation(sync: () => Promise<void>) {
+async function queueInvocation(
+  sync: () => Promise<void>,
+  queue = SYNC_QUEUE,
+  body: UserSyncMessage = { userId: 7, exchangeRates: null },
+) {
   vi.mocked(syncUser).mockImplementation(sync);
   const message = {
     id: "msg",
     timestamp: new Date(),
-    body: { userId: 7, exchangeRates: null },
+    body,
     attempts: 1,
     ack: vi.fn(),
     retry: vi.fn(),
   };
   const batch: MessageBatch<UserSyncMessage> = {
-    queue: SYNC_QUEUE,
+    queue,
     messages: [message],
     metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
     ackAll: vi.fn(),
@@ -240,5 +249,18 @@ describe("Sentry reports", () => {
     expect(sent).toContain("Sync failed");
     expect(sent).toContain(`Sync for user 7 ran out of requests after ${REQUEST_BUDGET} requests`);
     expect(fetches).toBeLessThanOrEqual(50);
+  });
+
+  it("deliver a dead-lettered sync's report with the user id and nothing else from the message", async () => {
+    const { message, delivered } = await queueInvocation(async () => {}, SYNC_DEAD_LETTER_QUEUE, {
+      userId: 7,
+      exchangeRates: { XTS: 98765.4321 },
+    });
+
+    expect(message.ack).toHaveBeenCalled();
+    expect(syncUser).not.toHaveBeenCalled();
+    const sent = delivered.join("\n");
+    expect(sent).toContain("User 7's sync failed repeatedly");
+    expect(sent).not.toContain("98765");
   });
 });

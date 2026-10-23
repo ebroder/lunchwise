@@ -54,6 +54,13 @@ allowance, but that's the assumption this design rests on.
 - Every run logs its request count ("User sync finished"), and one above 35
   also sends a Sentry warning with the `request-budget-warning` fingerprint,
   so they all group into one issue.
+- A message still failing after `max_retries` retries moves to
+  `lunchwise-sync-dlq`, whose consumer reports "User N's sync failed
+  repeatedly" to Sentry (user ID only) and acks. That's the only report for a
+  run Cloudflare kills outright, for example over the CPU limit, since such a
+  run can't send anything itself. (Cloudflare's docs don't say a killed
+  invocation counts as a failed delivery, so this is unconfirmed until we see
+  it happen.)
 
 ## Project layout
 
@@ -135,11 +142,12 @@ Cloudflare Workers. Deployed via `wrangler deploy` (or push to `main` triggers
 GitHub Actions). Config is in `wrangler.toml`. Secrets are set via
 `wrangler secret put`.
 
-The sync queue has to exist before the first deploy that binds it (one-time
-setup):
+The sync queue and its dead-letter queue have to exist before the first
+deploy that binds them (one-time setup):
 
 ```
 npx wrangler queues create lunchwise-sync
+npx wrangler queues create lunchwise-sync-dlq
 ```
 
 Required secrets: `TURSO_SHARED_DB_URL`, `TURSO_AUTH_TOKEN`,

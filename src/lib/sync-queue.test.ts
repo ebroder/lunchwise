@@ -11,6 +11,8 @@ import { syncUser } from "./sync.js";
 import {
   enqueueUserSyncs,
   processSyncBatch,
+  reportDeadLetters,
+  SYNC_DEAD_LETTER_QUEUE,
   SYNC_QUEUE,
   type UserSyncMessage,
 } from "./sync-queue.js";
@@ -66,9 +68,12 @@ function fakeMessage(body: UserSyncMessage) {
   return { id: "msg", timestamp: new Date(), body, attempts: 1, ack: vi.fn(), retry: vi.fn() };
 }
 
-function fakeBatch(message: ReturnType<typeof fakeMessage>): MessageBatch<UserSyncMessage> {
+function fakeBatch(
+  message: ReturnType<typeof fakeMessage>,
+  queue = SYNC_QUEUE,
+): MessageBatch<UserSyncMessage> {
   return {
-    queue: SYNC_QUEUE,
+    queue,
     messages: [message],
     metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
     ackAll: vi.fn(),
@@ -224,5 +229,20 @@ describe("processSyncBatch", () => {
       ["User sync finished", { requests: 3 }],
       ["User sync finished", { requests: 3 }],
     ]);
+  });
+});
+
+describe("reportDeadLetters", () => {
+  beforeEach(() => {
+    for (const fn of Object.values(log)) fn.mockClear();
+  });
+
+  it("reports the user to Sentry by id alone, then acks", () => {
+    const message = fakeMessage({ userId: 7, exchangeRates: RATES });
+
+    reportDeadLetters(fakeBatch(message, SYNC_DEAD_LETTER_QUEUE));
+
+    expect(log.error).toHaveBeenCalledWith("User 7's sync failed repeatedly", { userId: 7 });
+    expect(message.ack).toHaveBeenCalled();
   });
 });

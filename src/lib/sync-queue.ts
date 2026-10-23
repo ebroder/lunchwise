@@ -13,6 +13,7 @@ import { users } from "./schema-shared.js";
 import { syncUser } from "./sync.js";
 
 export const SYNC_QUEUE = "lunchwise-sync";
+export const SYNC_DEAD_LETTER_QUEUE = "lunchwise-sync-dlq";
 
 export interface UserSyncMessage {
   userId: number;
@@ -89,4 +90,14 @@ async function processSyncMessage(message: Message<UserSyncMessage>): Promise<vo
     );
   }
   message.ack();
+}
+
+// the only report for a run Cloudflare killed outright (over the CPU limit, say)
+export function reportDeadLetters(batch: MessageBatch<UserSyncMessage>): void {
+  const log = createLogger({ source: "queue" });
+  for (const message of batch.messages) {
+    const { userId } = message.body;
+    log.error(`User ${userId}'s sync failed repeatedly`, { userId });
+    message.ack();
+  }
 }

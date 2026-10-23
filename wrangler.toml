@@ -25,6 +25,11 @@ queue = "lunchwise-sync"
 max_batch_size = 1
 max_retries = 3
 retry_delay = 300
+dead_letter_queue = "lunchwise-sync-dlq"
+
+[[queues.consumers]]
+queue = "lunchwise-sync-dlq"
+max_batch_size = 1
 
 [[ratelimits]]
 name = "RATE_LIMITER"

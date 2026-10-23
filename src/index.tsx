@@ -5,6 +5,8 @@ import { initEnv } from "./lib/env.js";
 import {
   enqueueUserSyncs,
   processSyncBatch,
+  reportDeadLetters,
+  SYNC_DEAD_LETTER_QUEUE,
   SYNC_QUEUE,
   type UserSyncMessage,
 } from "./lib/sync-queue.js";
@@ -91,10 +93,16 @@ export default Sentry.withSentry(
     ): Promise<void> {
       initEnv(workerEnv);
       resetKeyCache();
-      if (batch.queue !== SYNC_QUEUE) {
-        throw new Error(`No consumer for queue ${batch.queue}`);
+      switch (batch.queue) {
+        case SYNC_QUEUE:
+          await processSyncBatch(batch);
+          break;
+        case SYNC_DEAD_LETTER_QUEUE:
+          reportDeadLetters(batch);
+          break;
+        default:
+          throw new Error(`No consumer for queue ${batch.queue}`);
       }
-      await processSyncBatch(batch);
     },
   } satisfies ExportedHandler<WorkerEnv, UserSyncMessage>,
 );
