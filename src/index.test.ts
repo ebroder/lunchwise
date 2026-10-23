@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { createClient } from "@libsql/client";
+import * as Sentry from "@sentry/cloudflare";
+import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { sql } from "drizzle-orm";
+import { SignJWT } from "jose";
+import { app } from "./app.js";
 import worker from "./index.js";
 import { encrypt, resetKeyCache } from "./lib/crypto.js";
 import { getSharedDb, getUserDb, initUserDb, type SharedDb, type UserDb } from "./lib/db.js";
 import { initEnv } from "./lib/env.js";
+import { getExchangeRates } from "./lib/exchange-rates.js";
+import { getUser } from "./lib/lunch-money.js";
 import { countedFetch, REQUEST_BUDGET, REQUEST_WARNING } from "./lib/request-budget.js";
 import * as sharedSchema from "./lib/schema-shared.js";
 import * as userSchema from "./lib/schema-user.js";
@@ -18,13 +23,10 @@ import {
   type UserSyncMessage,
 } from "./lib/sync-queue.js";
 
-vi.mock("./app.js", () => ({
-  app: {
-    fetch: async () => {
-      throw new Error("handler failed");
-    },
-  },
-}));
+vi.mock("./app.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./app.js")>();
+  return { app: { fetch: vi.fn(mod.app.fetch) } };
+});
 
 vi.mock("./lib/sync.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./lib/sync.js")>();
@@ -39,6 +41,16 @@ vi.mock("./lib/db.js", async (importOriginal) => {
 vi.mock("./lib/splitwise.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./lib/splitwise.js")>();
   return { ...mod, getAllExpenses: vi.fn() };
+});
+
+vi.mock("./lib/lunch-money.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./lib/lunch-money.js")>();
+  return { ...mod, getUser: vi.fn() };
+});
+
+vi.mock("./lib/exchange-rates.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("./lib/exchange-rates.js")>();
+  return { ...mod, getExchangeRates: vi.fn() };
 });
 
 vi.mock("./lib/sync-queue.js", async (importOriginal) => {
@@ -67,6 +79,7 @@ const workerEnv = {
 };
 
 async function sentryEnvelopesFor(request: Request): Promise<string[]> {
+  vi.mocked(app.fetch).mockRejectedValueOnce(new Error("handler failed"));
   const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
   const pending: Promise<unknown>[] = [];
   const ctx = {
@@ -109,6 +122,8 @@ function fakeRuntime() {
   return {
     delivered,
     fetches: () => fetchSpy.mock.calls.length,
+    sentrySends: () =>
+      fetchSpy.mock.calls.filter(([url]) => String(url).includes(SENTRY_HOST)).length,
     async run(invoke: (ctx: ExecutionContext) => unknown): Promise<void> {
       const pending: Promise<unknown>[] = [];
       const ctx = {
@@ -141,6 +156,14 @@ function sentryItems(envelopes: string[]): Record<string, unknown>[] {
         return [];
       }
     });
+}
+
+function sentryErrors(envelopes: string[]): string[] {
+  return sentryItems(envelopes).flatMap((item) =>
+    item.level === "error"
+      ? [(item.exception as { values: { value: string }[] }).values[0].value]
+      : [],
+  );
 }
 
 async function cronCheckIns(
@@ -201,12 +224,56 @@ async function queueInvocation(
   return { message, delivered: runtime.delivered, fetches: runtime.fetches() };
 }
 
-// User 7 with one enabled link. In-memory databases make no requests, so they don't count.
-async function seedUserWithLink(): Promise<UserDb> {
+async function apiInvocation(method: string, path: string) {
+  const session = await new SignJWT({ sub: "7" })
+    .setProtectedHeader({ alg: "HS256" })
+    .setExpirationTime("1h")
+    .sign(new TextEncoder().encode(workerEnv.SESSION_SECRET));
+  const request = new Request(`https://lunchwise.example.com${path}`, {
+    method,
+    headers: { cookie: `lunchwise_session=${session}` },
+  });
+  const runtime = fakeRuntime();
+  let status = 0;
+  let body: unknown;
+
+  // Sentry flushes once the response body has been sent.
+  await runtime.run(async (ctx) => {
+    const response = await worker.fetch!(request, workerEnv, ctx);
+    status = response.status;
+    body = await response.json();
+  });
+
+  return {
+    status,
+    body,
+    delivered: runtime.delivered,
+    requests: runtime.fetches() - runtime.sentrySends(),
+  };
+}
+
+// Like Turso's HTTP API, one request per query or batch.
+function countQueries(client: Client): void {
+  for (const method of ["execute", "batch"] as const) {
+    const run = client[method].bind(client) as (...args: unknown[]) => Promise<unknown>;
+    Object.assign(client, {
+      [method]: async (...args: unknown[]) => {
+        await countedFetch("https://db.example.turso.io/v2/pipeline");
+        return run(...args);
+      },
+    });
+  }
+}
+
+// User 7 with one enabled link, link 1 unless `link` says otherwise.
+async function seedUserWithLink(
+  link: Partial<typeof userSchema.links.$inferInsert> = {},
+): Promise<UserDb> {
   initEnv(workerEnv);
   resetKeyCache();
 
-  const shared = drizzle({ client: createClient({ url: ":memory:" }), schema: sharedSchema });
+  const sharedClient = createClient({ url: ":memory:" });
+  const shared = drizzle({ client: sharedClient, schema: sharedSchema });
   await shared.run(sql`
     CREATE TABLE users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,19 +287,22 @@ async function seedUserWithLink(): Promise<UserDb> {
     .insert(sharedSchema.users)
     .values({ id: 7, splitwiseUserId: "123", tursoDbUrl: "libsql://user-7.example" });
 
-  const userDb = drizzle({
-    client: createClient({ url: ":memory:" }),
-    schema: userSchema,
-  }) as UserDb;
+  const userClient = createClient({ url: ":memory:" });
+  const userDb = drizzle({ client: userClient, schema: userSchema }) as UserDb;
   await initUserDb(userDb);
   await userDb.insert(userSchema.credentials).values({
     splitwiseAccessToken: await encrypt("sw-token"),
     lunchMoneyApiKey: await encrypt("lm-key"),
   });
-  await userDb
-    .insert(userSchema.links)
-    .values({ splitwiseGroupId: "10", lmAccountId: 100, lastSyncedAt: "2026-01-01T00:00:00Z" });
+  await userDb.insert(userSchema.links).values({
+    splitwiseGroupId: "10",
+    lmAccountId: 100,
+    lastSyncedAt: "2026-01-01T00:00:00Z",
+    ...link,
+  });
 
+  countQueries(sharedClient);
+  countQueries(userClient);
   vi.mocked(getSharedDb).mockReturnValue(shared as SharedDb);
   vi.mocked(getUserDb).mockReturnValue(userDb);
   return userDb;
@@ -242,6 +312,13 @@ async function makeRequests(count: number): Promise<void> {
   for (let i = 0; i < count; i++) {
     await countedFetch("https://api.example.com/");
   }
+}
+
+async function exhaustRequests(): Promise<never> {
+  for (let i = 0; i <= REQUEST_BUDGET; i++) {
+    await countedFetch("https://api.example.com/");
+  }
+  throw new Error("No request was refused");
 }
 
 describe("Sentry reports", () => {
@@ -274,6 +351,29 @@ describe("Sentry reports", () => {
     },
   );
 
+  it("wait until a request's handler has returned", async () => {
+    const runtime = fakeRuntime();
+    let sentDuringHandler = -1;
+    vi.mocked(app.fetch).mockImplementationOnce(async () => {
+      Sentry.captureMessage("captured mid-request");
+      await countedFetch("https://api.example.com/");
+      sentDuringHandler = runtime.sentrySends();
+      return new Response("ok");
+    });
+
+    await runtime.run(async (ctx) => {
+      const response = await worker.fetch!(
+        new Request("https://lunchwise.example.com/"),
+        workerEnv,
+        ctx,
+      );
+      await response.text();
+    });
+
+    expect(sentDuringHandler).toBe(0);
+    expect(runtime.delivered.join("\n")).toContain("captured mid-request");
+  });
+
   it("deliver a queue consumer's errors", async () => {
     const { message, delivered } = await queueInvocation(async () => {
       throw new Error("Turso unavailable");
@@ -297,21 +397,12 @@ describe("Sentry reports", () => {
 
   it("report a user who ran out of requests once, within the Free plan's 50 subrequests", async () => {
     const userDb = await seedUserWithLink();
-    vi.mocked(getAllExpenses).mockImplementation(async () => {
-      for (;;) {
-        await countedFetch("https://secure.splitwise.com/api/v3.0/get_expenses");
-      }
-    });
+    vi.mocked(getAllExpenses).mockImplementation(exhaustRequests);
 
     const { message, delivered, fetches } = await queueInvocation(realSyncUser);
 
     expect(message.ack).toHaveBeenCalled();
-    const errors = sentryItems(delivered).flatMap((item) =>
-      item.level === "error"
-        ? [(item.exception as { values: { value: string }[] }).values[0].value]
-        : [],
-    );
-    expect(errors).toEqual([
+    expect(sentryErrors(delivered)).toEqual([
       `Sync for user 7 ran out of requests after ${REQUEST_BUDGET} requests`,
     ]);
     expect(fetches).toBeLessThanOrEqual(50);
@@ -330,5 +421,80 @@ describe("Sentry reports", () => {
     const sent = delivered.join("\n");
     expect(sent).toContain("User 7's sync failed repeatedly");
     expect(sent).not.toContain("98765");
+  });
+});
+
+describe("Sync now and dry run", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Sentry's per-isolate client drops an event identical to the one before it, so each case
+  // syncs a different link.
+  it.each([
+    { route: "Sync now", phase: "expenses", linkId: 1 },
+    { route: "Sync now", phase: "balance", linkId: 2 },
+    { route: "dry run", phase: "expenses", linkId: 3 },
+    { route: "dry run", phase: "balance", linkId: 4 },
+  ])(
+    "$route reports running out of requests in $phase once, within the Free plan's 50 subrequests",
+    async ({ route, phase, linkId }) => {
+      await seedUserWithLink({ id: linkId, syncBalance: 1 });
+      vi.mocked(getExchangeRates).mockResolvedValue({ USD: 1 });
+      if (phase === "expenses") {
+        vi.mocked(getAllExpenses).mockImplementation(exhaustRequests);
+      } else {
+        vi.mocked(getAllExpenses).mockResolvedValue([]);
+        vi.mocked(getUser).mockImplementation(exhaustRequests);
+      }
+
+      const { status, body, delivered, requests } =
+        route === "Sync now"
+          ? await apiInvocation("POST", `/api/sync/${linkId}`)
+          : await apiInvocation("GET", `/api/links/${linkId}/dry-run`);
+
+      expect(status).toBe(500);
+      expect(body).toEqual({
+        error:
+          route === "Sync now"
+            ? "This sync was too large to finish in one go and stopped partway."
+            : "This dry run was too large to finish in one go.",
+      });
+      const name = route === "Sync now" ? "Sync" : "Dry run";
+      expect(sentryErrors(delivered)).toEqual([
+        `${name} for user 7, link ${linkId} ran out of requests after ${REQUEST_BUDGET} requests`,
+      ]);
+      // the budget covers authentication's queries too
+      expect(requests).toBe(REQUEST_BUDGET);
+    },
+  );
+
+  it("Sync now returns its counts", async () => {
+    await seedUserWithLink();
+    vi.mocked(getAllExpenses).mockResolvedValue([]);
+
+    const { status, body, delivered } = await apiInvocation("POST", "/api/sync/1");
+
+    expect(body).toEqual({ created: 0, updated: 0, deleted: 0 });
+    expect(status).toBe(200);
+    expect(sentryErrors(delivered)).toEqual([]);
+  });
+
+  it("dry run returns its plan", async () => {
+    await seedUserWithLink();
+    vi.mocked(getAllExpenses).mockResolvedValue([]);
+
+    const { status, body, delivered } = await apiInvocation("GET", "/api/links/1/dry-run");
+
+    expect(body).toEqual({
+      expenses_fetched: 0,
+      created: 0,
+      updated: 0,
+      deleted: 0,
+      actions: [],
+      balance: { would_sync: false, balance: null, currency: null },
+    });
+    expect(status).toBe(200);
+    expect(sentryErrors(delivered)).toEqual([]);
   });
 });

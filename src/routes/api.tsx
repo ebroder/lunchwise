@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { createMiddleware } from "hono/factory";
 import { eq, desc } from "drizzle-orm";
 import { requireAuthJson, type AuthEnv } from "../lib/auth.js";
 import { credentials, links, syncLog } from "../lib/schema-user.js";
@@ -10,8 +11,14 @@ import { getExchangeRates, convertCurrency } from "../lib/exchange-rates.js";
 import { getSharedDb } from "../lib/db.js";
 import { encrypt } from "../lib/crypto.js";
 import { createLogger } from "../lib/logger.js";
+import { requestBudgetExceeded, requestsUsed, withRequestBudget } from "../lib/request-budget.js";
 
 const api = new Hono<AuthEnv>();
+
+// ahead of requireAuthJson, so the budget counts authentication's queries
+const requestBudget = createMiddleware((_c, next) => withRequestBudget(next));
+api.use("/links/:id/dry-run", requestBudget);
+api.use("/sync/:linkId", requestBudget);
 
 api.use("*", requireAuthJson);
 
@@ -330,6 +337,7 @@ api.get("/links/:id/dry-run", async (c) => {
           balances_by_currency: rawBalances,
         };
       } catch (err) {
+        if (requestBudgetExceeded()) throw err;
         const log = createLogger({ source: "api", endpoint: "dry-run", linkId });
         log.warn("Balance preview failed", { error: describeError(err) });
       }
@@ -352,6 +360,14 @@ api.get("/links/:id/dry-run", async (c) => {
     });
   } catch (err) {
     const log = createLogger({ source: "api", endpoint: "dry-run", linkId });
+    if (requestBudgetExceeded()) {
+      const requests = requestsUsed();
+      log.error(
+        `Dry run for user ${user.id}, link ${linkId} ran out of requests after ${requests} requests`,
+        { userId: user.id, requests },
+      );
+      return c.json({ error: "This dry run was too large to finish in one go." }, 500);
+    }
     log.error("Dry run failed", { error: describeError(err), cause: err });
     return c.json({ error: "Dry run failed" }, 500);
   }
@@ -381,6 +397,7 @@ api.post("/sync/:linkId", async (c) => {
         const balanceLog = createLogger({ source: "api", endpoint: "sync", linkId });
         await syncBalances([link], user, rates, balanceLog);
       } catch (err) {
+        if (requestBudgetExceeded()) throw err;
         const balanceLog = createLogger({ source: "api", endpoint: "sync", linkId });
         balanceLog.warn("Balance sync failed during manual sync", { error: describeError(err) });
       }
@@ -393,6 +410,17 @@ api.post("/sync/:linkId", async (c) => {
     });
   } catch (err) {
     const log = createLogger({ source: "api", endpoint: "sync", linkId });
+    if (requestBudgetExceeded()) {
+      const requests = requestsUsed();
+      log.error(
+        `Sync for user ${user.id}, link ${linkId} ran out of requests after ${requests} requests`,
+        { userId: user.id, requests },
+      );
+      return c.json(
+        { error: "This sync was too large to finish in one go and stopped partway." },
+        500,
+      );
+    }
     log.error("Sync failed", { error: describeError(err), cause: err });
     return c.json({ error: "Sync failed" }, 500);
   }
