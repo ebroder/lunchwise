@@ -11,11 +11,13 @@ interface SyncLink {
   syncBalance: number;
   enabled: number;
   lastSyncedAt: string | null;
+  lastFailure: { at: string; message: string } | null;
   createdAt: string;
 }
 
 export function Dashboard() {
   const [lmConnected, setLmConnected] = useState<boolean | null>(null);
+  const [lmKeyRejected, setLmKeyRejected] = useState(false);
   const [links, setLinks] = useState<SyncLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [alert, setAlert] = useState<{
@@ -27,16 +29,31 @@ export function Dashboard() {
   const [syncingId, setSyncingId] = useState<number | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  useEffect(() => {
-    api<{ hasLunchMoney: boolean }>("/api/me")
-      .then((data) => setLmConnected(data.hasLunchMoney))
-      .catch(() => setLmConnected(false));
+  function loadConnections() {
+    api<{ hasLunchMoney: boolean; lunchMoneyKeyRejected: boolean }>("/api/me")
+      .then((data) => {
+        setLmConnected(data.hasLunchMoney);
+        setLmKeyRejected(data.lunchMoneyKeyRejected);
+      })
+      // a failed refresh after Sync Now keeps what the page already shows
+      .catch(() => setLmConnected((connected) => connected ?? false));
+  }
+
+  function loadLinks() {
     api<SyncLink[]>("/api/links")
-      .then(setLinks)
+      .then((data) => {
+        setLinks(data);
+        setFetchError(null);
+      })
       .catch((err) => {
         setFetchError(err instanceof ApiError ? err.message : "Failed to load links");
       })
       .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    loadConnections();
+    loadLinks();
   }, []);
 
   async function saveApiKey(e: Event) {
@@ -46,7 +63,9 @@ export function Dashboard() {
     try {
       await apiJson("/api/settings/lunch-money", { apiKey });
       setLmConnected(true);
+      setLmKeyRejected(false);
       setApiKey("");
+      loadLinks();
     } catch (err) {
       setAlert({
         type: "error",
@@ -83,9 +102,6 @@ export function Dashboard() {
         type: "success",
         message: formatSyncResult(result),
       });
-      // Refresh links to update lastSyncedAt
-      const updated = await api<SyncLink[]>("/api/links");
-      setLinks(updated);
     } catch (err) {
       setAlert({
         type: "error",
@@ -94,6 +110,8 @@ export function Dashboard() {
     } finally {
       setSyncingId(null);
     }
+    loadConnections();
+    loadLinks();
   }
 
   return (
@@ -119,9 +137,15 @@ export function Dashboard() {
                 <span class="text-sm text-stone-400 dark:text-stone-500">Checking...</span>
               ) : lmConnected ? (
                 <div class="flex items-center gap-3">
-                  <span class="text-sm text-green-600 dark:text-green-400 font-medium">
-                    Connected
-                  </span>
+                  {lmKeyRejected ? (
+                    <span class="text-sm text-amber-600 dark:text-amber-400 font-medium">
+                      Key rejected
+                    </span>
+                  ) : (
+                    <span class="text-sm text-green-600 dark:text-green-400 font-medium">
+                      Connected
+                    </span>
+                  )}
                   {links.length === 0 ? (
                     <button
                       type="button"
@@ -146,11 +170,15 @@ export function Dashboard() {
         </div>
 
         {/* Lunch Money API key form */}
-        {!lmConnected && (
+        {(!lmConnected || lmKeyRejected) && (
           <div class={`${card} p-6`}>
-            <h2 class="text-lg font-semibold mb-2">Connect Lunch Money</h2>
+            <h2 class="text-lg font-semibold mb-2">
+              {lmKeyRejected ? "Replace your Lunch Money API key" : "Connect Lunch Money"}
+            </h2>
             <p class="text-sm text-stone-600 dark:text-stone-400 mb-4">
-              Enter your API key from{" "}
+              {lmKeyRejected
+                ? "Lunch Money no longer accepts the API key Lunchwise has. Enter a new one from "
+                : "Enter your API key from "}
               <a
                 href="https://my.lunchmoney.app/developers"
                 target="_blank"
@@ -198,8 +226,11 @@ export function Dashboard() {
             ) : (
               <div class="divide-y divide-stone-100 dark:divide-stone-800">
                 {links.map((link) => (
-                  <div key={link.id} class="py-3 flex items-center justify-between">
-                    <div>
+                  <div
+                    key={link.id}
+                    class="py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                  >
+                    <div class="min-w-0">
                       <div class="text-sm font-medium">
                         {link.splitwiseGroupId ? `Group #${link.splitwiseGroupId}` : "All groups"}
                         {" \u2192 "}
@@ -218,8 +249,14 @@ export function Dashboard() {
                           </span>
                         )}
                       </div>
+                      {link.lastFailure && (
+                        <div class="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                          Last sync failed {formatDateTime(link.lastFailure.at)}.{" "}
+                          {link.lastFailure.message}
+                        </div>
+                      )}
                     </div>
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-2 shrink-0">
                       <Link
                         href={`/dashboard/links/${link.id}?dry-run`}
                         class="text-sm text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 px-3 py-1 rounded border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition-colors cursor-pointer"

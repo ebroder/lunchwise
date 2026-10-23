@@ -98,9 +98,16 @@ depends on the format `apiError` gives every Lunch Money and Splitwise error,
 and the client tests pin that. `GET /api/links` gives each link its latest
 finished sync's failure (`lastFailure`, or `null`), and `GET /api/me` says
 whether Lunch Money has rejected the key. A credential rejection stops
-counting once that credential is replaced, going by
-`credentials.lunch_money_key_updated_at` or `splitwise_token_updated_at`.
-(`credentials.updated_at` won't do, because every login bumps it.)
+counting once any link syncs successfully after it, or once that credential
+is replaced, going by `credentials.lunch_money_key_updated_at` or
+`splitwise_token_updated_at`. (`credentials.updated_at` won't do, because
+every login bumps it.)
+
+The dashboard shows each link's failure under its "Last synced" line. When
+Lunch Money has rejected the key, the Connections card says "Key rejected"
+and the API key form appears, so the user can replace the key without
+removing their links. After "Sync now", the page reloads both endpoints to
+show the outcome.
 
 ## Project layout
 
