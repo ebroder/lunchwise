@@ -52,6 +52,7 @@ src/
     exchange-rates.ts Cached exchange rates (open.er-api.com, shared DB)
     splitwise.ts     Splitwise API client (openapi-fetch)
     lunch-money.ts   Lunch Money API client (openapi-fetch)
+    request-budget.ts Per-invocation subrequest count and guard (countedFetch)
     schema-shared.ts Drizzle schema for shared DB
     schema-user.ts   Drizzle schema for per-user DBs
   client/            Client-side SPA (Preact + wouter, built by Vite)
@@ -144,13 +145,27 @@ API errors, and the cron handler emit structured logs with context fields
   to be applied manually via `turso db shell`.
 - `initUserDb()` runs on auth and cron (not just signup) so existing users
   pick up new migrations. Deduplicated per isolate with a `Set<string>`.
-- Cloudflare Workers have a **1000 subrequest limit** per invocation. Each
-  `db.$client.batch()` call counts as one subrequest to Turso regardless of
-  how many SQL statements it contains. This is why `executeActions` in
-  `sync.ts` batches all DB writes into a single batch at the end rather than
-  writing incrementally after each phase (creates, updates, deletes). If a
-  later phase fails, earlier phases' LM changes are orphaned, but the next
-  sync self-heals via duplicate `external_id` handling.
+- Lunchwise runs on the Workers Free plan, which allows **50 outgoing
+  subrequests** per invocation (every `fetch`, including each Turso query,
+  each Splitwise and Lunch Money call, and each Sentry send) plus 1,000 to
+  Cloudflare services such as Queues. A request past the limit throws "Too
+  many subrequests", and since Sentry sends count too, nothing after that
+  point reaches Sentry. Each `db.$client.batch()` call counts as one
+  subrequest to Turso regardless of how many SQL statements it contains.
+  This is why `executeActions` in `sync.ts` batches all DB writes into a
+  single batch at the end rather than writing incrementally after each phase
+  (creates, updates, deletes). If a later phase fails, earlier phases' LM
+  changes are orphaned, but the next sync self-heals via duplicate
+  `external_id` handling.
+- `src/lib/request-budget.ts` holds the 50 / 45 / 35 numbers. Inside
+  `withRequestBudget`, `countedFetch` counts the invocation's requests and
+  refuses any past 45 with `RequestBudgetExceededError`, leaving the rest for
+  Sentry. The count lives in `AsyncLocalStorage` because concurrent
+  invocations can share an isolate. Pass `countedFetch` as the `fetch` option
+  of any new HTTP client the sync uses: libsql and openapi-fetch capture
+  `fetch` when the client is created, so a request that skips it goes
+  uncounted. Sentry needs no wiring, because its Cloudflare transport holds
+  every envelope until the flush that runs after the handler returns.
 - Lunch Money's insert and update APIs accept a maximum of 500 transactions
   per request. The client functions in `lunch-money.ts` chunk automatically.
 - Lunch Money's bulk update rejects the whole batch with a 404 if any

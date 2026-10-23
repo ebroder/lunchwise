@@ -1,6 +1,7 @@
 import createClient from "openapi-fetch";
 import type { paths, components } from "./lunch-money-api.js";
 import { describeError } from "./errors.js";
+import { countedFetch } from "./request-budget.js";
 
 export type LmTransaction = components["schemas"]["transactionObject"];
 export type LmManualAccount = components["schemas"]["manualAccountObject"];
@@ -12,6 +13,7 @@ export type LmUser = components["schemas"]["userObject"];
 export function createLunchMoneyClient(apiKey: string) {
   return createClient<paths>({
     baseUrl: "https://api.lunchmoney.dev/v2",
+    fetch: countedFetch,
     headers: { Authorization: `Bearer ${apiKey}` },
   });
 }

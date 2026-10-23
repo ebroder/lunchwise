@@ -1,6 +1,7 @@
 import createClient from "openapi-fetch";
 import type { paths, components } from "./splitwise-api.js";
 import { describeError } from "./errors.js";
+import { countedFetch } from "./request-budget.js";
 
 export type SplitwiseExpense = components["schemas"]["expense"];
 export type SplitwiseShare = components["schemas"]["share"];
@@ -9,6 +10,7 @@ export type SplitwiseGroup = components["schemas"]["group"];
 export function createSplitwiseClient(accessToken: string) {
   return createClient<paths>({
     baseUrl: "https://secure.splitwise.com/api/v3.0",
+    fetch: countedFetch,
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 }

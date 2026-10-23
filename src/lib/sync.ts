@@ -557,7 +557,7 @@ async function executeActions(
   }
 
   // Batch all DB writes at the end to minimize subrequests. Each batch() call
-  // is one subrequest to Turso, and Workers have a 1000 subrequest limit per
+  // is one subrequest to Turso, and Workers Free allows 50 subrequests per
   // invocation. Writing incrementally after each phase would use more. If a
   // later phase fails, earlier phases' LM changes are orphaned, but the next
   // sync self-heals via duplicate external_id handling in the creates path.

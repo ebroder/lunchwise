@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm";
 import * as sharedSchema from "./schema-shared.js";
 import * as userSchema from "./schema-user.js";
 import { env } from "./env.js";
+import { countedFetch } from "./request-budget.js";
 
 // --- Types ---
 
@@ -16,6 +17,7 @@ function createSharedDrizzle() {
   const client = createClient({
     url: env.TURSO_SHARED_DB_URL,
     authToken: env.TURSO_AUTH_TOKEN,
+    fetch: countedFetch,
   });
   return drizzle({ client, schema: sharedSchema });
 }
@@ -35,6 +37,7 @@ function createUserDrizzle(url: string) {
   const client = createClient({
     url,
     authToken: env.TURSO_AUTH_TOKEN,
+    fetch: countedFetch,
   });
   return drizzle({ client, schema: userSchema });
 }
