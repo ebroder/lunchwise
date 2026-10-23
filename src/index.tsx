@@ -45,15 +45,35 @@ export default Sentry.withSentry(
       initEnv(workerEnv);
       resetKeyCache();
       const log = createLogger({ source: "cron" });
-      ctx.waitUntil(
-        Sentry.withMonitor("lunchwise-sync", () => syncAllEnabled(), {
+      // Not Sentry.withMonitor: the SDK sends check-ins captured in its forked scope outside
+      // waitUntil, so the runtime cancels the closing one.
+      const monitorSlug = "lunchwise-sync";
+      const checkInId = Sentry.captureCheckIn(
+        { monitorSlug, status: "in_progress" },
+        {
           schedule: { type: "crontab", value: "0 */2 * * *" },
           checkinMargin: 5,
           maxRuntime: 10,
           timezone: "UTC",
-        }).catch((err) => {
-          log.error("Cron handler failed", { error: describeError(err), cause: err });
-        }),
+        },
+      );
+      const start = Date.now();
+      const finish = (status: "ok" | "error") => {
+        Sentry.captureCheckIn({
+          checkInId,
+          monitorSlug,
+          status,
+          duration: (Date.now() - start) / 1000,
+        });
+      };
+      ctx.waitUntil(
+        syncAllEnabled().then(
+          () => finish("ok"),
+          (err) => {
+            log.error("Cron handler failed", { error: describeError(err), cause: err });
+            finish("error");
+          },
+        ),
       );
     },
   } satisfies ExportedHandler<Record<string, string>>,

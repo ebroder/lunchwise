@@ -164,3 +164,11 @@ API errors, and the cron handler emit structured logs with context fields
   to Sentry. `src/index.tsx` sets every category explicitly, and
   `src/index.test.ts` checks the envelopes Sentry actually sends. If a Sentry
   upgrade breaks that test, fix the config rather than the test.
+- Send cron check-ins with `Sentry.captureCheckIn` from the `scheduled`
+  handler's own scope, not `Sentry.withMonitor`, and leave the sync in
+  `ctx.waitUntil`. `withMonitor` runs its callback in a forked isolation scope
+  without the SDK's per-invocation state, so (seen in `@sentry/cloudflare` 11.4 through 11.8)
+  the closing check-in is sent outside `waitUntil`, the runtime cancels it, and
+  the monitor reports every run as a timeout. Awaiting the sync instead holds
+  the `in_progress` check-in until the invocation ends, past the monitor's
+  5-minute margin on a long sync. `src/index.test.ts` covers both.
