@@ -29,31 +29,33 @@ export function Dashboard() {
   const [syncingId, setSyncingId] = useState<number | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
+  // after the first load, a failed refresh keeps what the page already shows
   function loadConnections() {
     api<{ hasLunchMoney: boolean; lunchMoneyKeyRejected: boolean }>("/api/me")
       .then((data) => {
         setLmConnected(data.hasLunchMoney);
         setLmKeyRejected(data.lunchMoneyKeyRejected);
       })
-      // a failed refresh after Sync Now keeps what the page already shows
       .catch(() => setLmConnected((connected) => connected ?? false));
   }
 
-  function loadLinks() {
+  function loadLinks(firstLoad = false) {
     api<SyncLink[]>("/api/links")
       .then((data) => {
         setLinks(data);
         setFetchError(null);
       })
       .catch((err) => {
-        setFetchError(err instanceof ApiError ? err.message : "Failed to load links");
+        if (firstLoad) {
+          setFetchError(err instanceof ApiError ? err.message : "Failed to load links");
+        }
       })
       .finally(() => setLoading(false));
   }
 
   useEffect(() => {
     loadConnections();
-    loadLinks();
+    loadLinks(true);
   }, []);
 
   async function saveApiKey(e: Event) {
