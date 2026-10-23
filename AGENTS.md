@@ -38,9 +38,11 @@ only queues work. `enqueueUserSyncs` (`src/lib/sync-queue.ts`) sends one
 it loaded once so consumers don't spend requests on them (or `null`, which
 skips balance sync). The `queue` handler gets one message per invocation
 (`max_batch_size = 1`) and runs `syncUser` inside `withRequestBudget`, so each
-user's sync runs in its own invocation with its own count. Cloudflare's docs
-don't say outright that each consumer invocation gets a fresh 50-subrequest
-allowance, but that's the assumption this design rests on.
+user's sync runs in its own invocation with its own count. Each consumer
+invocation does get its own 50-subrequest allowance, which Cloudflare's docs
+don't say outright. The first production queue run (2026-10-23) had 8
+invocations, one per user, using 5 to 18 requests each (93 in total, none
+refused).
 
 - A user whose setup throws (a transient Turso error, say) is retried after
   `retry_delay` (5 minutes), up to `max_retries`.
@@ -56,13 +58,30 @@ allowance, but that's the assumption this design rests on.
 - Every run logs its request count ("User sync finished"), and one above 35
   also sends a Sentry warning with the `request-budget-warning` fingerprint,
   so they all group into one issue.
+- A user sync costs about 6 requests for a user with a Lunch Money key, about
+  10 per enabled link, and 1 or 2 for balance sync. So a user with 3 enabled
+  links passes the 35-request warning, and one with 4 reaches the 45-request
+  guard. That run stops at the same link every time, so later links and
+  balance sync never run, and the consumer's Sentry error is how we'd find
+  out. The fix is one queue message per link rather than per user. We're
+  waiting to build it until Sentry shows it happening.
 - A message still failing after `max_retries` retries moves to
   `lunchwise-sync-dlq`, whose consumer reports "User N's sync failed
   repeatedly" to Sentry (user ID only) and acks. That's the only report for a
   run Cloudflare kills outright, for example over the CPU limit, since such a
   run can't send anything itself. (Cloudflare's docs don't say a killed
   invocation counts as a failed delivery, so this is unconfirmed until we see
-  it happen.)
+  it happen.) In the first production run, consumer invocations used 16 to
+  146 ms of CPU and the cron 34 ms, all well over the Free plan's documented
+  10 ms, and none was killed.
+
+"Sync now" (`POST /api/sync/:linkId`) and the dry run
+(`GET /api/links/:id/dry-run`) stay synchronous, because they return their
+results to the page and a queue run would have the same 50-request ceiling.
+Both run inside `withRequestBudget` too, applied in `api.tsx` ahead of the
+auth middleware so authentication's queries count. One that runs out sends a
+single Sentry error naming the user, link and request count, and the page
+says the sync was too large to finish in one go.
 
 ## Project layout
 
@@ -189,10 +208,11 @@ API errors, and the cron handler emit structured logs with context fields
 - `initUserDb()` runs on auth and on every background sync (not just signup)
   so existing users pick up new migrations. Auth deduplicates it per isolate
   with a `Set<string>`.
-- Lunchwise runs on the Workers Free plan, which allows **50 outgoing
-  subrequests** per invocation (every `fetch`, including each Turso query,
-  each Splitwise and Lunch Money call, and each Sentry send) plus 1,000 to
-  Cloudflare services such as Queues. A request past the limit throws "Too
+- Lunchwise runs on the Workers Free plan, and we intend to stay on it, so
+  changes have to fit its limits. It allows **50 outgoing subrequests** per
+  invocation (every `fetch`, including each Turso query, each Splitwise and
+  Lunch Money call, and each Sentry send) plus 1,000 to Cloudflare services
+  such as Queues. A request past the limit throws "Too
   many subrequests", and since Sentry sends count too, nothing after that
   point reaches Sentry. Each `db.$client.batch()` call counts as one
   subrequest to Turso regardless of how many SQL statements it contains.
@@ -209,7 +229,8 @@ API errors, and the cron handler emit structured logs with context fields
   of any new HTTP client the sync uses: libsql and openapi-fetch capture
   `fetch` when the client is created, so a request that skips it goes
   uncounted. Sentry needs no wiring, because its Cloudflare transport holds
-  every envelope until the flush that runs after the handler returns.
+  every envelope until the flush that runs after the handler returns (for a
+  fetch handler, after the response body has been sent).
 - Lunch Money's insert and update APIs accept a maximum of 500 transactions
   per request. The client functions in `lunch-money.ts` chunk automatically.
 - Lunch Money's bulk update rejects the whole batch with a 404 if any
