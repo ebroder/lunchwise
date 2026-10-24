@@ -180,9 +180,10 @@ async function buildTrackedMap(
 }> {
   const tracked = new Map<string, TrackedRow>();
   const backfilledAmounts = new Map<string, number>();
-  const resumingFirstSync = !link.lastSyncedAt && link.catchUpOffset !== null;
+  // set for a first sync's runs after the first, and for a widened link's catch-up
+  const alreadyBackfilled = !link.lastSyncedAt && link.catchUpOffset !== null;
 
-  if (!link.lastSyncedAt && !resumingFirstSync) {
+  if (!link.lastSyncedAt && !alreadyBackfilled) {
     // Fetch existing LM transactions once (used for both backfill and amount comparison)
     const lmTransactions = await getTransactions(apiKey, {
       manual_account_id: link.lmAccountId,
@@ -253,13 +254,17 @@ async function buildTrackedMap(
     .where(eq(syncedTransactions.linkId, link.id));
   for (const row of rows) {
     tracked.set(row.splitwiseExpenseId, row);
-    // a first sync spread over several runs backfills in its first run only
-    if (resumingFirstSync && row.splitwiseUpdatedAt === "backfill" && row.backfillAmount !== null) {
+    if (alreadyBackfilled && row.splitwiseUpdatedAt === "backfill" && row.backfillAmount !== null) {
       backfilledAmounts.set(row.splitwiseExpenseId, row.backfillAmount);
     }
   }
 
   return { tracked, backfilledAmounts };
+}
+
+// a "backfill" row's created_at (SQLite's datetime('now'), in UTC) is when the backfill adopted it
+function updatedSinceBackfill(expense: SplitwiseExpense, row: TrackedRow): boolean {
+  return Date.parse(expense.updated_at ?? "") > Date.parse(`${row.createdAt.replace(" ", "T")}Z`);
 }
 
 function planUpdate(
@@ -424,10 +429,13 @@ async function planSync(
       });
     } else if (existing.splitwiseUpdatedAt !== expense.updated_at) {
       if (existing.splitwiseUpdatedAt === "backfill") {
-        // Backfilled row: only update if the amount has drifted
+        // Backfilled row: only update if the amount has drifted or, with no amount to compare, if
+        // the expense has changed since the backfill
         const lmAmount = backfilledAmounts.get(eid);
-        if (lmAmount !== undefined && lmAmount === amount) {
-          log.debug("Stamp backfill (amount matches)", { expenseId: eid, amount });
+        const drifted =
+          lmAmount === undefined ? updatedSinceBackfill(expense, existing) : lmAmount !== amount;
+        if (!drifted) {
+          log.debug("Stamp backfill", { expenseId: eid, amount, lmAmount });
           stamps.push({
             trackedId: existing.id,
             splitwiseUpdatedAt: expense.updated_at ?? "",

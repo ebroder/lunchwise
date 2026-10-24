@@ -685,7 +685,11 @@ describe("Dashboard", () => {
 });
 
 // Splitwise with this many expenses in each group, and a Lunch Money that takes whatever it's sent
-function fakeApis(expensesInGroup: Record<string, number>): typeof fetch {
+// and holds this many transactions already
+function fakeApis(
+  expensesInGroup: Record<string, number>,
+  transactionsInAccount = 0,
+): typeof fetch {
   return async (input) => {
     if (!(input instanceof Request)) return new Response("{}");
     const url = new URL(input.url);
@@ -721,7 +725,17 @@ function fakeApis(expensesInGroup: Record<string, number>): typeof fetch {
       });
     }
     if (url.pathname === "/v2/transactions") {
-      return Response.json({ transactions: [], has_more: false });
+      const offset = Number(url.searchParams.get("offset"));
+      const limit = Number(url.searchParams.get("limit"));
+      const count = Math.max(0, Math.min(limit, transactionsInAccount - offset));
+      return Response.json({
+        transactions: Array.from({ length: count }, (_, i) => ({
+          id: offset + i + 1,
+          external_id: String(offset + i + 1),
+          amount: "10.0000",
+        })),
+        has_more: offset + count < transactionsInAccount,
+      });
     }
     if (url.pathname === "/v2/categories") return Response.json({ categories: [] });
     if (url.pathname === "/v2/me") return Response.json({ primary_currency: "usd" });
@@ -844,22 +858,34 @@ describe("Large syncs", () => {
   });
 
   it.each([
-    { edit: "the group", body: { splitwiseGroupId: "20" }, link: catchingUp, offset: 0 },
-    { edit: "the start date", body: { startDate: "2024-01-01" }, link: catchingUp, offset: 0 },
+    { edit: "changing the group", body: { splitwiseGroupId: "20" }, link: catchingUp, offset: 0 },
     {
-      edit: "other settings",
-      body: { includePayments: true, syncBalance: true, enabled: false },
+      edit: "changing the start date",
+      body: { startDate: "2024-01-01" },
+      link: catchingUp,
+      offset: 0,
+    },
+    { edit: "turning payments on", body: { includePayments: true }, link: catchingUp, offset: 0 },
+    {
+      edit: "turning payments off",
+      body: { includePayments: false },
+      link: { ...catchingUp, includePayments: 1 },
+      offset: perRun,
+    },
+    {
+      edit: "changing other settings",
+      body: { lmAccountId: 200, syncBalance: true, enabled: false },
       link: catchingUp,
       offset: perRun,
     },
     {
-      edit: "the group",
+      edit: "changing the group",
       body: { splitwiseGroupId: "20" },
       link: { catchUpOffset: null, catchUpStartedAt: null },
       offset: null,
     },
   ])(
-    "editing $edit of a link with offset $link.catchUpOffset leaves it at $offset",
+    "$edit on a link with offset $link.catchUpOffset leaves it at $offset",
     async ({ body, link, offset }) => {
       const userDb = await seedUserWithLink({ lastSyncedAt: null, ...link });
 
@@ -880,4 +906,258 @@ describe("Large syncs", () => {
       });
     },
   );
+});
+
+interface DatedExpense {
+  id: number;
+  date: string;
+}
+
+// `count` expenses numbered from `firstId`, dated an hour apart from `from`
+function datedExpenses(firstId: number, count: number, from: string): DatedExpense[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: firstId + i,
+    date: new Date(Date.parse(from) + i * 3_600_000).toISOString(),
+  }));
+}
+
+// Splitwise listing each group's expenses updated since updated_after, newest date first (each was
+// last updated on its date), and a Lunch Money that takes whatever it's sent
+function fakeHistory(expensesInGroup: Record<string, DatedExpense[]>) {
+  const requests: { method: string; url: URL; body: unknown }[] = [];
+  const respond: typeof fetch = async (input) => {
+    if (!(input instanceof Request)) return new Response("{}");
+    const url = new URL(input.url);
+    const body: unknown = input.method === "GET" ? null : await input.json();
+    requests.push({ method: input.method, url, body });
+    if (url.pathname.endsWith("/get_expenses")) {
+      const updatedAfter = Date.parse(url.searchParams.get("updated_after") ?? "");
+      const offset = Number(url.searchParams.get("offset"));
+      const limit = Number(url.searchParams.get("limit"));
+      const listing = (expensesInGroup[url.searchParams.get("group_id") ?? ""] ?? [])
+        .filter((e) => Date.parse(e.date) > updatedAfter)
+        .sort((a, b) => b.date.localeCompare(a.date));
+      return Response.json({
+        expenses: listing.slice(offset, offset + limit).map(({ id, date }) => ({
+          id,
+          description: "Dinner",
+          cost: "20.00",
+          currency_code: "USD",
+          date,
+          updated_at: date,
+          deleted_at: null,
+          payment: false,
+          users: [{ user_id: 123, net_balance: "-10.00" }],
+        })),
+      });
+    }
+    if (url.pathname === "/v2/transactions" && input.method === "POST") {
+      const { transactions } = body as { transactions: { external_id: string }[] };
+      return Response.json({
+        transactions: transactions.map((tx) => ({
+          id: Number(tx.external_id),
+          external_id: tx.external_id,
+        })),
+      });
+    }
+    if (url.pathname === "/v2/transactions" && input.method === "GET") {
+      return Response.json({ transactions: [], has_more: false });
+    }
+    if (url.pathname === "/v2/categories") return Response.json({ categories: [] });
+    return new Response("{}");
+  };
+
+  const lunchMoney = (method: string) =>
+    requests.filter((r) => r.method === method && r.url.pathname === "/v2/transactions");
+  const sent = (method: string) =>
+    lunchMoney(method).flatMap(
+      (r) => (r.body as { transactions: { id?: number; external_id?: string }[] }).transactions,
+    );
+  return {
+    respond,
+    created: () => sent("POST").map((tx) => Number(tx.external_id)),
+    updated: () => sent("PUT").map((tx) => tx.id),
+    backfills: () => lunchMoney("GET").length,
+    fetchedSince: () =>
+      requests
+        .filter((r) => r.url.pathname.endsWith("/get_expenses"))
+        .map((r) => r.url.searchParams.get("updated_after")),
+  };
+}
+
+// Saves link 1 from the edit page, with group 10 from 2025 unless `changes` say otherwise.
+function editLink(changes: Record<string, unknown>) {
+  return apiInvocation("PUT", "/api/links/1", {
+    splitwiseGroupId: "10",
+    lmAccountId: 100,
+    startDate: "2025-01-01",
+    includePayments: false,
+    syncBalance: false,
+    enabled: true,
+    ...changes,
+  });
+}
+
+// Tracks these expenses on link 1, as if it had synced them.
+async function trackSynced(userDb: UserDb, expenses: DatedExpense[]) {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+  await userDb.insert(userSchema.syncedTransactions).values(
+    expenses.map(({ id, date }) => ({
+      linkId: 1,
+      splitwiseExpenseId: String(id),
+      lmTransactionId: id,
+      splitwiseUpdatedAt: date,
+    })),
+  );
+}
+
+describe("Widening a synced link", () => {
+  const perRun = EXPENSE_PAGES_PER_RUN * EXPENSE_PAGE_SIZE;
+  const editedAt = "2026-10-23T15:00:00.000Z";
+  const syncedLink = { startDate: "2025-01-01", lastSyncedAt: "2026-10-01T00:00:00.000Z" };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(editedAt));
+    vi.mocked(getExpenses).mockImplementation(realGetExpenses);
+    vi.mocked(getUser).mockImplementation(realGetUser);
+    vi.mocked(getExchangeRates).mockResolvedValue({ USD: 1 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    { edit: "changing the group", link: {}, changes: { splitwiseGroupId: "20" } },
+    { edit: "changing to all groups", link: {}, changes: { splitwiseGroupId: null } },
+    { edit: "changing from all groups", link: { splitwiseGroupId: null }, changes: {} },
+    { edit: "moving the start date earlier", link: {}, changes: { startDate: "2020-01-23" } },
+    { edit: "removing the start date", link: {}, changes: { startDate: null } },
+    { edit: "turning payments on", link: {}, changes: { includePayments: true } },
+    {
+      edit: "moving the start date earlier during a catch-up",
+      link: { catchUpOffset: perRun, catchUpStartedAt: "2026-10-23T10:00:00.000Z" },
+      changes: { startDate: "2020-01-23" },
+    },
+  ])("$edit starts reading the link again from its start date", async ({ link, changes }) => {
+    const userDb = await seedUserWithLink({ ...syncedLink, ...link });
+
+    const { status } = await editLink(changes);
+
+    expect(status).toBe(200);
+    const [row] = await userDb.select().from(userSchema.links);
+    expect(row).toMatchObject({ lastSyncedAt: null, catchUpOffset: 0, catchUpStartedAt: editedAt });
+  });
+
+  it.each([
+    { edit: "moving the start date later", link: {}, changes: { startDate: "2026-01-01" } },
+    { edit: "adding a start date", link: { startDate: null }, changes: {} },
+    { edit: "turning payments off", link: { includePayments: 1 }, changes: {} },
+    { edit: "changing the account", link: {}, changes: { lmAccountId: 200 } },
+    { edit: "turning on balance sync", link: {}, changes: { syncBalance: true } },
+    { edit: "disabling it", link: {}, changes: { enabled: false } },
+    { edit: "saving it unchanged", link: {}, changes: {} },
+  ])("$edit leaves the link's sync where it was", async ({ link, changes }) => {
+    const userDb = await seedUserWithLink({ ...syncedLink, ...link });
+
+    const { status } = await editLink(changes);
+
+    expect(status).toBe(200);
+    const [row] = await userDb.select().from(userSchema.links);
+    expect(row).toMatchObject({
+      lastSyncedAt: syncedLink.lastSyncedAt,
+      catchUpOffset: null,
+      catchUpStartedAt: null,
+    });
+  });
+
+  it("brings in each expense an earlier start date covers once, and then syncs as usual", async () => {
+    // synced from 2025, and 3,000 expenses from 2020 on that it has never read
+    const recent = datedExpenses(1, 1500, "2025-01-02T00:00:00.000Z");
+    const older = datedExpenses(5001, 3000, "2020-02-01T00:00:00.000Z");
+    const fake = fakeHistory({ 10: [...recent, ...older] });
+    const userDb = await seedUserWithLink(syncedLink);
+    await trackSynced(userDb, recent);
+
+    await editLink({ startDate: "2020-01-23" });
+    const plan = await apiInvocation("GET", "/api/links/1/dry-run", undefined, fake.respond);
+    const runs = [];
+    for (const at of ["2026-10-23T16:00:00.000Z", "2026-10-23T18:00:00.000Z"]) {
+      vi.setSystemTime(new Date(at));
+      const { body } = await apiInvocation("POST", "/api/sync/1", undefined, fake.respond);
+      runs.push(body);
+    }
+
+    const firstShare = perRun - recent.length;
+    expect(plan.body).toMatchObject({
+      expenses_fetched: perRun,
+      created: firstShare,
+      updated: 0,
+      more_to_sync: true,
+    });
+    expect(runs).toEqual([
+      { created: firstShare, updated: 0, deleted: 0, more_to_sync: true },
+      { created: older.length - firstShare, updated: 0, deleted: 0, more_to_sync: false },
+    ]);
+    expect(fake.created().sort((a, b) => a - b)).toEqual(older.map((e) => e.id));
+    expect(fake.updated()).toEqual([]);
+    expect(fake.backfills()).toBe(0);
+    const [link] = await userDb.select().from(userSchema.links);
+    expect(link).toMatchObject({ lastSyncedAt: editedAt, catchUpOffset: null });
+
+    vi.setSystemTime(new Date("2026-10-23T20:00:00.000Z"));
+    await apiInvocation("POST", "/api/sync/1", undefined, fake.respond);
+    expect(fake.fetchedSince().at(-1)).toBe("2026-10-23T14:58:00.000Z");
+  });
+
+  it("brings in a new group's expenses and leaves the old group's alone", async () => {
+    const oldGroup = datedExpenses(1, 5, "2025-03-01T00:00:00.000Z");
+    const newGroup = datedExpenses(101, 7, "2025-02-01T00:00:00.000Z");
+    const fake = fakeHistory({ 10: oldGroup, 20: newGroup });
+    const userDb = await seedUserWithLink(syncedLink);
+    await trackSynced(userDb, oldGroup);
+
+    await editLink({ splitwiseGroupId: "20" });
+    const plan = await apiInvocation("GET", "/api/links/1/dry-run", undefined, fake.respond);
+    vi.setSystemTime(new Date("2026-10-23T16:00:00.000Z"));
+    const run = await apiInvocation("POST", "/api/sync/1", undefined, fake.respond);
+
+    expect(plan.body).toMatchObject({ expenses_fetched: 7, created: 7, more_to_sync: false });
+    expect(run.body).toEqual({ created: 7, updated: 0, deleted: 0, more_to_sync: false });
+    expect(fake.created().sort((a, b) => a - b)).toEqual(newGroup.map((e) => e.id));
+    expect(fake.updated()).toEqual([]);
+    expect(fake.backfills()).toBe(0);
+    const tracked = await userDb.select().from(userSchema.syncedTransactions);
+    expect(
+      tracked
+        .filter((row) => !row.isDeleted)
+        .map((row) => Number(row.splitwiseExpenseId))
+        .sort((a, b) => a - b),
+    ).toEqual([...oldGroup, ...newGroup].map((e) => e.id));
+    const [link] = await userDb.select().from(userSchema.links);
+    expect(link).toMatchObject({ lastSyncedAt: editedAt, catchUpOffset: null });
+  });
+
+  it("keeps the catch-up's runs on an account full of transactions under the request warning", async () => {
+    const userDb = await seedUserWithLink({ ...syncedLink, syncBalance: 1 });
+    await editLink({ splitwiseGroupId: "20", startDate: null, syncBalance: true });
+
+    const { message, delivered, requests } = await queueInvocation(
+      realSyncUser,
+      SYNC_QUEUE,
+      { userId: 7, exchangeRates: { USD: 1 } },
+      fakeApis({ 20: 10_000 }, 10_000),
+    );
+
+    expect(message.ack).toHaveBeenCalled();
+    expect(requests).toBeLessThanOrEqual(REQUEST_WARNING);
+    expect(sentryErrors(delivered)).toEqual([]);
+    expect(sentryWarningFingerprints(delivered)).toEqual([]);
+    const [link] = await userDb.select().from(userSchema.links);
+    expect(link).toMatchObject({ lastSyncedAt: null, catchUpOffset: perRun });
+    const logs = await userDb.select().from(userSchema.syncLog);
+    expect(logs.map((row) => [row.status, row.created])).toEqual([["success", perRun]]);
+  });
 });

@@ -127,9 +127,21 @@ ended, so each resumed run moves it 3,900 further.
   would pass the guard in that first run on every attempt. We're waiting to
   fix it (backfilling only each run's share, say) until Sentry shows it
   happening.
-- Changing a link's group or start date restarts its catch-up at offset 0.
-  Ending the catch-up instead would make an unfinished first sync backfill
-  again.
+- An edit that widens a link with a `lastSyncedAt` (another group, to or from
+  all groups, an earlier or no start date, or payments turned on) starts a
+  catch-up at offset 0, with `lastSyncedAt` null and `catch_up_started_at` the
+  edit time. A sync only fetches what was updated since `lastSyncedAt`, so the
+  older expenses the edit takes in would otherwise never arrive. Clearing
+  `lastSyncedAt` alone would make the next run a first sync, and its uncapped
+  backfill passes the guard on every attempt once the account holds several
+  thousand transactions. The planner skips what's already synced. A row
+  backfilled before `backfill_amount` existed has no amount to compare, so the
+  catch-up updates its transaction only if the expense changed after the
+  backfill. Other edits leave the sync alone, and transactions from a group
+  the link no longer covers stay in Lunch Money.
+- Otherwise, changing the group or start date, or turning payments on,
+  restarts a catch-up in progress at offset 0. Ending the catch-up instead
+  would make an unfinished first sync backfill again.
 - `GET /api/links` gives each link `catchingUp` and `lastSuccessAt` (the
   start of its latest successful run), and the dashboard's "Last synced" uses
   the latter, because `lastSyncedAt` stays null through a first sync's

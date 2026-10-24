@@ -244,19 +244,36 @@ api.put("/links/:id", async (c) => {
     .select({
       splitwiseGroupId: links.splitwiseGroupId,
       startDate: links.startDate,
+      includePayments: links.includePayments,
+      lastSyncedAt: links.lastSyncedAt,
       catchUpOffset: links.catchUpOffset,
     })
     .from(links)
     .where(eq(links.id, linkId));
   if (!existing) return c.json({ error: "Link not found" }, 404);
 
+  const now = new Date().toISOString();
   const splitwiseGroupId = body.splitwiseGroupId || null;
   const startDate = body.startDate || null;
-  // A catch-up's offset means nothing in a different listing, so the catch-up starts over. Ending
-  // it would make an unfinished first sync backfill again, over everything it has created.
-  const restartCatchUp =
+  const groupChanged = splitwiseGroupId !== existing.splitwiseGroupId;
+  const paymentsAdded = !!body.includePayments && !existing.includePayments;
+  const startsEarlier =
+    existing.startDate !== null && (startDate === null || startDate < existing.startDate);
+
+  let catchUp: Partial<typeof links.$inferInsert> = {};
+  if (existing.lastSyncedAt !== null && (groupChanged || startsEarlier || paymentsAdded)) {
+    // A sync fetches only what was updated since lastSyncedAt, which leaves out the older expenses
+    // a widening edit takes in. A catch-up from the start date reads them without the uncapped
+    // backfill a first sync starts with.
+    catchUp = { lastSyncedAt: null, catchUpOffset: 0, catchUpStartedAt: now };
+  } else if (
     existing.catchUpOffset !== null &&
-    (splitwiseGroupId !== existing.splitwiseGroupId || startDate !== existing.startDate);
+    (groupChanged || startDate !== existing.startDate || paymentsAdded)
+  ) {
+    // A catch-up's offset means nothing in a different listing, so the catch-up starts over. Ending
+    // it would make an unfinished first sync backfill again, over everything it has created.
+    catchUp = { catchUpOffset: 0 };
+  }
 
   await db
     .update(links)
@@ -267,14 +284,14 @@ api.put("/links/:id", async (c) => {
       includePayments: body.includePayments ? 1 : 0,
       syncBalance: body.syncBalance ? 1 : 0,
       enabled: body.enabled ? 1 : 0,
-      ...(restartCatchUp ? { catchUpOffset: 0 } : {}),
-      updatedAt: new Date().toISOString(),
+      ...catchUp,
+      updatedAt: now,
     })
     .where(eq(links.id, linkId));
 
   const user = c.get("user");
   const log = createLogger({ source: "api", userId: user.id });
-  log.info("Link updated", { linkId, enabled: !!body.enabled });
+  log.info("Link updated", { linkId, enabled: !!body.enabled, ...catchUp });
 
   return c.json({ ok: true });
 });

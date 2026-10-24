@@ -1200,6 +1200,54 @@ describe("syncLink catching up", () => {
     });
   });
 
+  it("updates a widened link's backfilled transactions only if Splitwise has changed them", async () => {
+    // rows the link's first sync backfilled in February 2025, two before it recorded amounts
+    const unchanged = makeExpense({ id: 1 });
+    const edited = makeExpense({ id: 2, updated_at: "2026-03-01T00:00:00Z" });
+    const matching = makeExpense({ id: 3 });
+    const drifted = makeExpense({ id: 4 });
+    const backfilled = [
+      { expense: unchanged, backfillAmount: null },
+      { expense: edited, backfillAmount: null },
+      { expense: matching, backfillAmount: 10 },
+      { expense: drifted, backfillAmount: 12.5 },
+    ];
+    const link = await addLink({
+      catchUpOffset: 0,
+      catchUpStartedAt: "2026-10-23T09:00:00.000Z",
+    });
+    await db.insert(syncedTransactions).values(
+      backfilled.map(({ expense, backfillAmount }) => ({
+        linkId: link.id,
+        splitwiseExpenseId: String(expense.id),
+        lmTransactionId: 500 + expense.id!,
+        splitwiseUpdatedAt: "backfill",
+        backfillAmount,
+        createdAt: "2025-02-01 00:00:00",
+      })),
+    );
+    serveListing(backfilled.map(({ expense }) => expense));
+
+    expect(await runAt("2026-10-23T10:00:00.000Z", link.id)).toMatchObject({
+      created: 0,
+      updated: 2,
+      more_to_sync: false,
+    });
+
+    expect(mockGetTransactions).not.toHaveBeenCalled();
+    expect(mockUpdateTransactions).toHaveBeenCalledOnce();
+    expect(mockUpdateTransactions.mock.calls[0][1].map((u: { id: number }) => u.id)).toEqual([
+      502, 504,
+    ]);
+    const rows = await db
+      .select()
+      .from(syncedTransactions)
+      .orderBy(syncedTransactions.splitwiseExpenseId);
+    expect(rows.map((row) => row.splitwiseUpdatedAt)).toEqual(
+      backfilled.map(({ expense }) => expense.updated_at),
+    );
+  });
+
   it("dry-runs the next run's share of a catch-up", async () => {
     const listing = expenseListing(2 * perRun + 1);
     const drifted = listing[perRun];
