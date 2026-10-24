@@ -14,8 +14,12 @@ export interface SyncCounts {
   created: number;
   updated: number;
   deleted: number;
+  more_to_sync: boolean;
 }
 
 export function formatSyncResult(result: SyncCounts): string {
-  return `Sync complete: ${result.created} created, ${result.updated} updated, ${result.deleted} deleted.`;
+  const counts = `${result.created} created, ${result.updated} updated, ${result.deleted} deleted`;
+  return result.more_to_sync
+    ? `Synced so far: ${counts}. Older expenses will follow in later syncs.`
+    : `Sync complete: ${counts}.`;
 }

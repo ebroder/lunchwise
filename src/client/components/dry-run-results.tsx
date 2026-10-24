@@ -21,6 +21,7 @@ export interface DryRunResult {
   created: number;
   updated: number;
   deleted: number;
+  more_to_sync: boolean;
   actions: DryRunAction[];
   balance: BalancePreview;
 }
@@ -67,6 +68,8 @@ export function DryRunResults({ state, data, error, syncing, onSync }: DryRunRes
       <h2 class="text-lg font-semibold mb-1">Dry Run Results</h2>
       <p class="text-sm text-stone-500 dark:text-stone-400 mb-4">
         No changes were made. This shows what a sync would do.
+        {data.more_to_sync &&
+          " There are too many expenses for one sync, so this covers only the next batch. Later syncs pick up the rest."}
       </p>
 
       <div class={`${card} p-4 mb-4`}>

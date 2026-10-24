@@ -68,11 +68,14 @@ refused).
 - Those numbers are for a link with little new to fetch. A link's first sync
   fetches every expense updated since its start date, which adds about 4
   requests per 1,000 expenses (one Splitwise page, two Lunch Money inserts
-  and one Turso batch), so one run reaches the guard at roughly 8,000
-  expenses. Keep the Splitwise page size and `DB_BATCH` at 1,000. At 100
-  each, a first sync of 3,800 expenses (LUNCHWISE-A) needed nearly 100
-  requests, and since `lastSyncedAt` only moves after a sync succeeds, every
-  attempt stopped at the same page.
+  and one Turso batch). One run fetches at most `EXPENSE_PAGES_PER_RUN` (4)
+  pages of 1,000 and leaves the rest to later runs (see below), so a capped
+  run's link costs about 22 requests. `src/index.test.ts` counts 31 for a
+  user with only that link and 41 for one with an ordinary link besides,
+  against the 35-request warning and the 45-request guard, so raising the
+  cap means redoing that arithmetic. Keep the Splitwise page size and
+  `DB_BATCH` at 1,000 too. At 100 each, a first sync of 3,800 expenses
+  (LUNCHWISE-A) needed nearly 100 requests.
 - A message still failing after `max_retries` retries moves to
   `lunchwise-sync-dlq`, whose consumer reports "User N's sync failed
   repeatedly" to Sentry (user ID only) and acks. That's the only report for a
@@ -82,6 +85,35 @@ refused).
   it happen.) In the first production run, consumer invocations used 16 to
   146 ms of CPU and the cron 34 ms, all well over the Free plan's documented
   10 ms, and none was killed.
+
+A sync with more to fetch than one run allows catches up over several runs.
+Splitwise lists expenses by `date`, newest first (`updated_at`, `created_at`
+and `id` come in no useful order), so the bookmark is a page offset into one
+listing. A run whose last page comes back full records `catch_up_offset` and
+`catch_up_started_at` on the link and leaves `lastSyncedAt` alone, so the next
+run asks for the same `updated_after` and starts at the offset. New expenses
+push older ones down the listing, and the planner skips the few a run reads
+twice. An expense whose date is edited during the catch-up can jump behind the
+bookmark, but its `updated_at` is then later than the catch-up's start, which
+is why the run that reaches the end sets `lastSyncedAt` to that start and not
+its own.
+
+- A capped run is a success in `sync_log`. A run that fails leaves the
+  bookmark where it was, so the next run redoes that part.
+- A first sync's backfill (adopting Lunch Money transactions whose
+  `external_id` is a Splitwise expense ID) runs only in the catch-up's first
+  run, since by the second the account holds thousands of transactions the
+  sync created. It stores each adopted transaction's amount in
+  `synced_transactions.backfill_amount`, and later runs of that first sync
+  compare against it.
+- Changing a link's group or start date restarts its catch-up at offset 0.
+  Ending the catch-up instead would make an unfinished first sync backfill
+  again.
+- `GET /api/links` gives each link `catchingUp` and `lastSuccessAt` (the
+  start of its latest successful run), and the dashboard's "Last synced" uses
+  the latter, because `lastSyncedAt` stays null through a first sync's
+  catch-up. "Sync now" and the dry run each cover one run's share and return
+  `more_to_sync`.
 
 "Sync now" (`POST /api/sync/:linkId`) and the dry run
 (`GET /api/links/:id/dry-run`) stay synchronous, because they return their

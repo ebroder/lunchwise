@@ -1,7 +1,7 @@
 import { useState, useEffect } from "preact/hooks";
 import { Link } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
-import { formatSyncResult, formatDateTime } from "../lib/format.js";
+import { formatSyncResult, formatDateTime, type SyncCounts } from "../lib/format.js";
 import { Button, card, inputClass, alertSuccess, alertError } from "../components/ui.js";
 
 interface SyncLink {
@@ -10,7 +10,8 @@ interface SyncLink {
   lmAccountId: number;
   syncBalance: number;
   enabled: number;
-  lastSyncedAt: string | null;
+  lastSuccessAt: string | null;
+  catchingUp: boolean;
   lastFailure: { at: string; message: string } | null;
   createdAt: string;
 }
@@ -95,11 +96,7 @@ export function Dashboard() {
     setSyncingId(linkId);
     setAlert(null);
     try {
-      const result = await apiJson<{
-        created: number;
-        updated: number;
-        deleted: number;
-      }>(`/api/sync/${linkId}`, {});
+      const result = await apiJson<SyncCounts>(`/api/sync/${linkId}`, {});
       setAlert({
         type: "success",
         message: formatSyncResult(result),
@@ -239,8 +236,8 @@ export function Dashboard() {
                         Account #{link.lmAccountId}
                       </div>
                       <div class="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
-                        {link.lastSyncedAt
-                          ? `Last synced: ${formatDateTime(link.lastSyncedAt)}`
+                        {link.lastSuccessAt
+                          ? `Last synced: ${formatDateTime(link.lastSuccessAt)}`
                           : "Never synced"}
                         {!link.enabled && (
                           <span class="ml-2 text-amber-600 dark:text-amber-400">(disabled)</span>
@@ -251,6 +248,13 @@ export function Dashboard() {
                           </span>
                         )}
                       </div>
+                      {link.catchingUp && (
+                        <div class="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
+                          {link.enabled
+                            ? "Still syncing older expenses. The rest will follow automatically."
+                            : "Some older expenses haven't synced yet."}
+                        </div>
+                      )}
                       {link.lastFailure && (
                         <div class="text-xs text-red-600 dark:text-red-400 mt-0.5">
                           Last sync failed {formatDateTime(link.lastFailure.at)}.{" "}

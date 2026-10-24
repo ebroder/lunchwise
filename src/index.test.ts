@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import * as Sentry from "@sentry/cloudflare";
 import { createClient, type Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
@@ -16,8 +16,8 @@ import { getUser } from "./lib/lunch-money.js";
 import { countedFetch, REQUEST_BUDGET, REQUEST_WARNING } from "./lib/request-budget.js";
 import * as sharedSchema from "./lib/schema-shared.js";
 import * as userSchema from "./lib/schema-user.js";
-import { getAllExpenses } from "./lib/splitwise.js";
-import { syncUser } from "./lib/sync.js";
+import { EXPENSE_PAGE_SIZE, getExpenses } from "./lib/splitwise.js";
+import { EXPENSE_PAGES_PER_RUN, syncUser } from "./lib/sync.js";
 import {
   enqueueUserSyncs,
   SYNC_DEAD_LETTER_QUEUE,
@@ -42,7 +42,7 @@ vi.mock("./lib/db.js", async (importOriginal) => {
 
 vi.mock("./lib/splitwise.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./lib/splitwise.js")>();
-  return { ...mod, getAllExpenses: vi.fn() };
+  return { ...mod, getExpenses: vi.fn() };
 });
 
 vi.mock("./lib/lunch-money.js", async (importOriginal) => {
@@ -62,8 +62,14 @@ vi.mock("./lib/sync-queue.js", async (importOriginal) => {
 
 const { syncUser: realSyncUser } =
   await vi.importActual<typeof import("./lib/sync.js")>("./lib/sync.js");
+const { getExpenses: realGetExpenses } =
+  await vi.importActual<typeof import("./lib/splitwise.js")>("./lib/splitwise.js");
+const { getUser: realGetUser } =
+  await vi.importActual<typeof import("./lib/lunch-money.js")>("./lib/lunch-money.js");
 
 const SENTRY_HOST = "sentry.example.com";
+
+const noExpenses = { expenses: [], nextOffset: null };
 
 const workerEnv = {
   SYNC_QUEUE: { send: vi.fn(), sendBatch: vi.fn(), metrics: vi.fn() },
@@ -105,7 +111,7 @@ async function sentryEnvelopesFor(request: Request): Promise<string[]> {
 // Like the Workers runtime, drops Sentry sends still in flight once the handler and every
 // waitUntil promise have settled. Check-ins take longer than other sends, so one only counts
 // if a waitUntil covers it, not a concurrent send that happens to keep the invocation alive.
-function fakeRuntime() {
+function fakeRuntime(respond: typeof fetch = async () => new Response("{}")) {
   let invocationEnded = false;
   const delivered: string[] = [];
   const decoder = new TextDecoder();
@@ -118,7 +124,7 @@ function fakeRuntime() {
     if (!invocationEnded && String(url).includes(SENTRY_HOST)) {
       delivered.push(text);
     }
-    return new Response("{}");
+    return respond(url, init);
   });
 
   // an earlier runtime in the same test shares the spy
@@ -211,6 +217,7 @@ async function queueInvocation(
   sync: typeof syncUser,
   queue = SYNC_QUEUE,
   body: UserSyncMessage = { userId: 7, exchangeRates: null },
+  respond?: typeof fetch,
 ) {
   vi.mocked(syncUser).mockImplementation(sync);
   const message = {
@@ -228,14 +235,19 @@ async function queueInvocation(
     ackAll: vi.fn(),
     retryAll: vi.fn(),
   };
-  const runtime = fakeRuntime();
+  const runtime = fakeRuntime(respond);
 
   await runtime.run((ctx) => worker.queue?.(batch, workerEnv, ctx));
 
-  return { message, delivered: runtime.delivered, fetches: runtime.fetches() };
+  return {
+    message,
+    delivered: runtime.delivered,
+    fetches: runtime.fetches(),
+    requests: runtime.fetches() - runtime.sentrySends(),
+  };
 }
 
-async function apiInvocation(method: string, path: string, json?: unknown) {
+async function apiInvocation(method: string, path: string, json?: unknown, respond?: typeof fetch) {
   const session = await new SignJWT({ sub: "7" })
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("1h")
@@ -248,7 +260,7 @@ async function apiInvocation(method: string, path: string, json?: unknown) {
     },
     body: json === undefined ? undefined : JSON.stringify(json),
   });
-  const runtime = fakeRuntime();
+  const runtime = fakeRuntime(respond);
   let status = 0;
   let body: unknown;
 
@@ -414,7 +426,7 @@ describe("Sentry reports", () => {
 
   it("report a user who ran out of requests once, within the Free plan's 50 subrequests", async () => {
     const userDb = await seedUserWithLink();
-    vi.mocked(getAllExpenses).mockImplementation(exhaustRequests);
+    vi.mocked(getExpenses).mockImplementation(exhaustRequests);
 
     const { message, delivered, fetches } = await queueInvocation(realSyncUser);
 
@@ -429,7 +441,7 @@ describe("Sentry reports", () => {
 
   it("deliver credentials rejected during a queued sync as Sentry warnings, not errors", async () => {
     await seedUserWithLink({ syncBalance: 1 });
-    vi.mocked(getAllExpenses).mockRejectedValue(
+    vi.mocked(getExpenses).mockRejectedValue(
       apiError("Splitwise", 401, { error: "Invalid API request: you are not logged in" }),
     );
     vi.mocked(getUser).mockRejectedValue(apiError("Lunch Money", 401, { message: "Unauthorized" }));
@@ -479,9 +491,9 @@ describe("Sync now and dry run", () => {
       await seedUserWithLink({ id: linkId, syncBalance: 1 });
       vi.mocked(getExchangeRates).mockResolvedValue({ USD: 1 });
       if (phase === "expenses") {
-        vi.mocked(getAllExpenses).mockImplementation(exhaustRequests);
+        vi.mocked(getExpenses).mockImplementation(exhaustRequests);
       } else {
-        vi.mocked(getAllExpenses).mockResolvedValue([]);
+        vi.mocked(getExpenses).mockResolvedValue(noExpenses);
         vi.mocked(getUser).mockImplementation(exhaustRequests);
       }
 
@@ -508,18 +520,18 @@ describe("Sync now and dry run", () => {
 
   it("Sync now returns its counts", async () => {
     await seedUserWithLink();
-    vi.mocked(getAllExpenses).mockResolvedValue([]);
+    vi.mocked(getExpenses).mockResolvedValue(noExpenses);
 
     const { status, body, delivered } = await apiInvocation("POST", "/api/sync/1");
 
-    expect(body).toEqual({ created: 0, updated: 0, deleted: 0 });
+    expect(body).toEqual({ created: 0, updated: 0, deleted: 0, more_to_sync: false });
     expect(status).toBe(200);
     expect(sentryErrors(delivered)).toEqual([]);
   });
 
   it("Sync now explains a rejected credential and reports it as a Sentry warning", async () => {
     await seedUserWithLink({ id: 5 });
-    vi.mocked(getAllExpenses).mockRejectedValue(
+    vi.mocked(getExpenses).mockRejectedValue(
       apiError("Splitwise", 401, { error: "Invalid API request: you are not logged in" }),
     );
 
@@ -538,7 +550,7 @@ describe("Sync now and dry run", () => {
 
   it("Sync now points to History for any other failure", async () => {
     await seedUserWithLink({ id: 6 });
-    vi.mocked(getAllExpenses).mockRejectedValue(apiError("Splitwise", 503, "Service Unavailable"));
+    vi.mocked(getExpenses).mockRejectedValue(apiError("Splitwise", 503, "Service Unavailable"));
 
     const { status, body, delivered } = await apiInvocation("POST", "/api/sync/6");
 
@@ -549,7 +561,7 @@ describe("Sync now and dry run", () => {
 
   it("dry run reports a rejected credential as a Sentry warning", async () => {
     await seedUserWithLink({ id: 8 });
-    vi.mocked(getAllExpenses).mockRejectedValue(
+    vi.mocked(getExpenses).mockRejectedValue(
       apiError("Splitwise", 401, { error: "Invalid API request: you are not logged in" }),
     );
 
@@ -564,7 +576,7 @@ describe("Sync now and dry run", () => {
 
   it("dry run returns its plan", async () => {
     await seedUserWithLink();
-    vi.mocked(getAllExpenses).mockResolvedValue([]);
+    vi.mocked(getExpenses).mockResolvedValue(noExpenses);
 
     const { status, body, delivered } = await apiInvocation("GET", "/api/links/1/dry-run");
 
@@ -573,6 +585,7 @@ describe("Sync now and dry run", () => {
       created: 0,
       updated: 0,
       deleted: 0,
+      more_to_sync: false,
       actions: [],
       balance: { would_sync: false, balance: null, currency: null },
     });
@@ -669,4 +682,202 @@ describe("Dashboard", () => {
     const [cred] = await userDb.select().from(userSchema.credentials);
     expect(cred.splitwiseTokenUpdatedAt! >= before).toBe(true);
   });
+});
+
+// Splitwise with this many expenses in each group, and a Lunch Money that takes whatever it's sent
+function fakeApis(expensesInGroup: Record<string, number>): typeof fetch {
+  return async (input) => {
+    if (!(input instanceof Request)) return new Response("{}");
+    const url = new URL(input.url);
+    if (url.pathname.endsWith("/get_expenses")) {
+      const group = url.searchParams.get("group_id") ?? "";
+      const offset = Number(url.searchParams.get("offset"));
+      const limit = Number(url.searchParams.get("limit"));
+      const count = Math.max(0, Math.min(limit, (expensesInGroup[group] ?? 0) - offset));
+      return Response.json({
+        expenses: Array.from({ length: count }, (_, i) => ({
+          id: Number(group) * 100_000 + offset + i,
+          description: "Dinner",
+          cost: "20.00",
+          currency_code: "USD",
+          date: "2024-06-15T00:00:00Z",
+          updated_at: "2024-06-15T12:00:00Z",
+          deleted_at: null,
+          payment: false,
+          users: [{ user_id: 123, net_balance: "-10.00" }],
+        })),
+      });
+    }
+    if (url.pathname.includes("/get_group/")) {
+      return Response.json({ group: { id: Number(url.pathname.split("/").pop()), members: [] } });
+    }
+    if (url.pathname === "/v2/transactions" && input.method === "POST") {
+      const { transactions } = (await input.json()) as { transactions: { external_id: string }[] };
+      return Response.json({
+        transactions: transactions.map((tx) => ({
+          id: Number(tx.external_id),
+          external_id: tx.external_id,
+        })),
+      });
+    }
+    if (url.pathname === "/v2/transactions") {
+      return Response.json({ transactions: [], has_more: false });
+    }
+    if (url.pathname === "/v2/categories") return Response.json({ categories: [] });
+    if (url.pathname === "/v2/me") return Response.json({ primary_currency: "usd" });
+    return new Response("{}");
+  };
+}
+
+describe("Large syncs", () => {
+  const perRun = EXPENSE_PAGES_PER_RUN * EXPENSE_PAGE_SIZE;
+  const catchingUp = { catchUpOffset: perRun, catchUpStartedAt: "2026-10-23T10:00:00.000Z" };
+
+  beforeEach(() => {
+    vi.mocked(getExpenses).mockImplementation(realGetExpenses);
+    vi.mocked(getUser).mockImplementation(realGetUser);
+    vi.mocked(getExchangeRates).mockResolvedValue({ USD: 1 });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("stop a first sync's run short of the request warning and bookmark the rest", async () => {
+    const userDb = await seedUserWithLink({ lastSyncedAt: null, syncBalance: 1 });
+
+    const { message, delivered, requests } = await queueInvocation(
+      realSyncUser,
+      SYNC_QUEUE,
+      { userId: 7, exchangeRates: { USD: 1 } },
+      fakeApis({ 10: 10_000 }),
+    );
+
+    expect(message.ack).toHaveBeenCalled();
+    expect(requests).toBeLessThanOrEqual(REQUEST_WARNING);
+    expect(sentryErrors(delivered)).toEqual([]);
+    expect(sentryWarningFingerprints(delivered)).toEqual([]);
+    const [link] = await userDb.select().from(userSchema.links);
+    expect(link).toMatchObject({ lastSyncedAt: null, catchUpOffset: perRun });
+  });
+
+  it("leave room for an ordinary link beside one that's catching up", async () => {
+    const userDb = await seedUserWithLink({ lastSyncedAt: null, syncBalance: 1 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    await userDb.insert(userSchema.links).values({
+      splitwiseGroupId: "20",
+      lmAccountId: 200,
+      syncBalance: 1,
+      lastSyncedAt: "2026-10-23T08:00:00.000Z",
+    });
+
+    const { message, delivered, requests } = await queueInvocation(
+      realSyncUser,
+      SYNC_QUEUE,
+      { userId: 7, exchangeRates: { USD: 1 } },
+      fakeApis({ 10: 10_000, 20: 5 }),
+    );
+
+    expect(message.ack).toHaveBeenCalled();
+    expect(requests).toBeLessThan(REQUEST_BUDGET);
+    expect(sentryErrors(delivered)).toEqual([]);
+    const logs = await userDb.select().from(userSchema.syncLog);
+    expect(logs.map((row) => [row.linkId, row.status, row.created])).toEqual([
+      [1, "success", perRun],
+      [2, "success", 5],
+    ]);
+  });
+
+  it("Sync now runs the next part of a first sync and says more is to come", async () => {
+    await seedUserWithLink({ id: 11, lastSyncedAt: null, syncBalance: 1 });
+
+    const { status, body, requests, delivered } = await apiInvocation(
+      "POST",
+      "/api/sync/11",
+      {},
+      fakeApis({ 10: 10_000 }),
+    );
+
+    expect(status).toBe(200);
+    expect(body).toEqual({ created: perRun, updated: 0, deleted: 0, more_to_sync: true });
+    expect(requests).toBeLessThan(REQUEST_BUDGET);
+    expect(sentryErrors(delivered)).toEqual([]);
+  });
+
+  it("dry run plans from the bookmark and says more is to come", async () => {
+    await seedUserWithLink(catchingUp);
+    vi.mocked(getExpenses).mockResolvedValue({ expenses: [], nextOffset: 2 * perRun });
+
+    const { status, body } = await apiInvocation("GET", "/api/links/1/dry-run");
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ expenses_fetched: 0, more_to_sync: true });
+    expect(getExpenses).toHaveBeenCalledWith(
+      "sw-token",
+      expect.objectContaining({ offset: perRun }),
+    );
+  });
+
+  it("list whether each link is still catching up, and when it last synced", async () => {
+    const userDb = await seedUserWithLink({ lastSyncedAt: null, ...catchingUp }, [
+      { linkId: 1, startedAt: "2026-10-23T10:00:00.000Z", status: "success" },
+      { linkId: 1, startedAt: "2026-10-23T12:00:00.000Z", status: "success" },
+      { linkId: 1, startedAt: "2026-10-23T14:00:00.000Z", status: "running" },
+    ]);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    await userDb.insert(userSchema.links).values({ id: 2, lmAccountId: 200 });
+
+    const { status, body } = await apiInvocation("GET", "/api/links");
+
+    expect(status).toBe(200);
+    expect(body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 1,
+          lastSyncedAt: null,
+          lastSuccessAt: "2026-10-23T12:00:00.000Z",
+          catchingUp: true,
+        }),
+        expect.objectContaining({ id: 2, lastSuccessAt: null, catchingUp: false }),
+      ]),
+    );
+  });
+
+  it.each([
+    { edit: "the group", body: { splitwiseGroupId: "20" }, link: catchingUp, offset: 0 },
+    { edit: "the start date", body: { startDate: "2024-01-01" }, link: catchingUp, offset: 0 },
+    {
+      edit: "other settings",
+      body: { includePayments: true, syncBalance: true, enabled: false },
+      link: catchingUp,
+      offset: perRun,
+    },
+    {
+      edit: "the group",
+      body: { splitwiseGroupId: "20" },
+      link: { catchUpOffset: null, catchUpStartedAt: null },
+      offset: null,
+    },
+  ])(
+    "editing $edit of a link with offset $link.catchUpOffset leaves it at $offset",
+    async ({ body, link, offset }) => {
+      const userDb = await seedUserWithLink({ lastSyncedAt: null, ...link });
+
+      const { status } = await apiInvocation("PUT", "/api/links/1", {
+        splitwiseGroupId: "10",
+        lmAccountId: 100,
+        startDate: null,
+        enabled: true,
+        ...body,
+      });
+
+      expect(status).toBe(200);
+      const [row] = await userDb.select().from(userSchema.links);
+      expect(row).toMatchObject({
+        catchUpOffset: offset,
+        catchUpStartedAt: link.catchUpStartedAt,
+        lastSyncedAt: null,
+      });
+    },
+  );
 });

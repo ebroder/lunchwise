@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { classifySyncError, describeError } from "./errors.js";
 import {
-  getAllExpenses,
+  getExpenses,
   getGroup,
   getGroups,
   getUserBalances,
@@ -22,37 +22,78 @@ afterEach(() => {
   fetchSpy.mockReset();
 });
 
-describe("getAllExpenses", () => {
+function fullPage(from: number) {
+  return Array.from({ length: 1000 }, (_, i) => ({ id: from + i }));
+}
+
+function requestedOffsets() {
+  return fetchSpy.mock.calls.map(([request]) =>
+    new URL((request as Request).url).searchParams.get("offset"),
+  );
+}
+
+describe("getExpenses", () => {
   it("returns expenses from a single page", async () => {
     const expenses = [{ id: 1 }, { id: 2 }];
     fetchSpy.mockResolvedValueOnce(jsonResponse({ expenses }));
 
-    const result = await getAllExpenses("token", {});
+    const result = await getExpenses("token", { maxPages: 4 });
 
-    expect(result).toEqual(expenses);
+    expect(result).toEqual({ expenses, nextOffset: null });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("paginates when a page is full", async () => {
-    const page1 = Array.from({ length: 1000 }, (_, i) => ({ id: i }));
-    const page2 = [{ id: 1000 }, { id: 1001 }];
-
     fetchSpy
-      .mockResolvedValueOnce(jsonResponse({ expenses: page1 }))
-      .mockResolvedValueOnce(jsonResponse({ expenses: page2 }));
+      .mockResolvedValueOnce(jsonResponse({ expenses: fullPage(0) }))
+      .mockResolvedValueOnce(jsonResponse({ expenses: [{ id: 1000 }, { id: 1001 }] }));
 
-    const result = await getAllExpenses("token", {});
+    const result = await getExpenses("token", { maxPages: 4 });
 
-    expect(result).toHaveLength(1002);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(result.expenses).toHaveLength(1002);
+    expect(result.nextOffset).toBeNull();
+    expect(requestedOffsets()).toEqual(["0", "1000"]);
+  });
+
+  it("starts at the offset it is given", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ expenses: [{ id: 3000 }] }));
+
+    const result = await getExpenses("token", { offset: 3000, maxPages: 4 });
+
+    expect(result).toEqual({ expenses: [{ id: 3000 }], nextOffset: null });
+    expect(requestedOffsets()).toEqual(["3000"]);
+  });
+
+  it("stops after maxPages full pages and says where the next one starts", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ expenses: fullPage(2000) }))
+      .mockResolvedValueOnce(jsonResponse({ expenses: fullPage(3000) }));
+
+    const result = await getExpenses("token", { offset: 2000, maxPages: 2 });
+
+    expect(result.expenses).toHaveLength(2000);
+    expect(result.nextOffset).toBe(4000);
+    expect(requestedOffsets()).toEqual(["2000", "3000"]);
+  });
+
+  it("reports nothing more after a short last page", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ expenses: fullPage(0) }))
+      .mockResolvedValueOnce(jsonResponse({ expenses: [] }));
+
+    const result = await getExpenses("token", { maxPages: 2 });
+
+    expect(result.expenses).toHaveLength(1000);
+    expect(result.nextOffset).toBeNull();
   });
 
   it("passes group_id and updated_after as query params", async () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse({ expenses: [] }));
 
-    await getAllExpenses("token", {
+    await getExpenses("token", {
       group_id: 42,
       updated_after: "2024-01-01T00:00:00Z",
+      maxPages: 4,
     });
 
     const request = fetchSpy.mock.calls[0][0] as Request;
@@ -65,7 +106,9 @@ describe("getAllExpenses", () => {
   it("throws on API error", async () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse({ error: "Unauthorized" }, 401));
 
-    await expect(getAllExpenses("bad-token", {})).rejects.toThrow("Splitwise API error (401)");
+    await expect(getExpenses("bad-token", { maxPages: 4 })).rejects.toThrow(
+      "Splitwise API error (401)",
+    );
   });
 });
 
@@ -111,7 +154,7 @@ describe("getUserBalances", () => {
 
 describe("rejected access", () => {
   it.each([
-    ["getAllExpenses", () => getAllExpenses("token", {})],
+    ["getExpenses", () => getExpenses("token", { maxPages: 4 })],
     ["getGroups", () => getGroups("token")],
     ["getGroup", () => getGroup("token", 10)],
   ])("fails %s with an error the sync recognizes", async (_name, call) => {

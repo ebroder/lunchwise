@@ -82,6 +82,14 @@ const migrations: { version: number; sql: string[] }[] = [
       `ALTER TABLE credentials ADD COLUMN splitwise_token_updated_at TEXT`,
     ],
   },
+  {
+    version: 3,
+    sql: [
+      `ALTER TABLE links ADD COLUMN catch_up_offset INTEGER`,
+      `ALTER TABLE links ADD COLUMN catch_up_started_at TEXT`,
+      `ALTER TABLE synced_transactions ADD COLUMN backfill_amount REAL`,
+    ],
+  },
 ];
 
 function isDuplicateColumnError(err: unknown): boolean {
@@ -118,6 +126,8 @@ export async function initUserDb(db: UserDb): Promise<void> {
         enabled INTEGER NOT NULL DEFAULT 1,
         sync_balance INTEGER NOT NULL DEFAULT 0,
         last_synced_at TEXT,
+        catch_up_offset INTEGER,
+        catch_up_started_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )`,
@@ -131,6 +141,7 @@ export async function initUserDb(db: UserDb): Promise<void> {
         lm_transaction_id INTEGER NOT NULL,
         splitwise_updated_at TEXT NOT NULL,
         is_deleted INTEGER NOT NULL DEFAULT 0,
+        backfill_amount REAL,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       )`,

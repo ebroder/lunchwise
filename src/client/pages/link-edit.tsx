@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "preact/hooks";
 import { useLocation, useSearch, Link as WouterLink } from "wouter";
 import { api, apiJson, ApiError } from "../lib/api.js";
-import { formatSyncResult } from "../lib/format.js";
+import { formatSyncResult, type SyncCounts } from "../lib/format.js";
 import {
   Button,
   card,
@@ -161,11 +161,7 @@ export function LinkEdit({ params }: { params: { id: string } }) {
     setSyncing(true);
     setAlert(null);
     try {
-      const result = await apiJson<{
-        created: number;
-        updated: number;
-        deleted: number;
-      }>(`/api/sync/${linkId}`, {});
+      const result = await apiJson<SyncCounts>(`/api/sync/${linkId}`, {});
       setAlert({
         type: "success",
         message: formatSyncResult(result),

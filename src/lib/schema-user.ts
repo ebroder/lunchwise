@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 const timestamp = (name: string) => text(name).notNull().default(sql`(datetime('now'))`);
@@ -21,6 +21,9 @@ export const links = sqliteTable("links", {
   enabled: integer("enabled").notNull().default(1),
   syncBalance: integer("sync_balance").notNull().default(0),
   lastSyncedAt: text("last_synced_at"),
+  // set while a sync too large for one run is partway through its Splitwise listing
+  catchUpOffset: integer("catch_up_offset"),
+  catchUpStartedAt: text("catch_up_started_at"),
   createdAt: timestamp("created_at"),
   updatedAt: timestamp("updated_at"),
 });
@@ -36,6 +39,8 @@ export const syncedTransactions = sqliteTable(
     lmTransactionId: integer("lm_transaction_id").notNull(),
     splitwiseUpdatedAt: text("splitwise_updated_at").notNull(),
     isDeleted: integer("is_deleted").notNull().default(0),
+    // Lunch Money's amount when the row was backfilled
+    backfillAmount: real("backfill_amount"),
     createdAt: timestamp("created_at"),
     updatedAt: timestamp("updated_at"),
   },

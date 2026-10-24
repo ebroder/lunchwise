@@ -6,7 +6,7 @@ import * as sharedSchema from "./schema-shared.js";
 import * as userSchema from "./schema-user.js";
 import { credentials, syncedTransactions, syncLog, links } from "./schema-user.js";
 import { getSharedDb, getUserDb, initUserDb, type SharedDb, type UserDb } from "./db.js";
-import { syncLink, syncBalances, syncUser } from "./sync.js";
+import { EXPENSE_PAGES_PER_RUN, syncLink, syncBalances, syncUser } from "./sync.js";
 import { env } from "./env.js";
 import { encrypt } from "./crypto.js";
 import { apiError } from "./errors.js";
@@ -18,7 +18,7 @@ import {
 } from "./request-budget.js";
 import {
   getUserShare,
-  getAllExpenses,
+  getExpenses,
   getGroups,
   getGroup,
   type SplitwiseExpense,
@@ -44,7 +44,7 @@ vi.mock("./splitwise.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./splitwise.js")>();
   return {
     ...mod,
-    getAllExpenses: vi.fn().mockResolvedValue([]),
+    getExpenses: vi.fn().mockResolvedValue({ expenses: [], nextOffset: null }),
     getGroups: vi.fn().mockResolvedValue([]),
     getGroup: vi.fn().mockResolvedValue(null),
   };
@@ -71,7 +71,7 @@ vi.mock("./exchange-rates.js", async (importOriginal) => {
   };
 });
 
-const mockGetAllExpenses = getAllExpenses as Mock;
+const mockGetExpenses = getExpenses as Mock;
 const mockGetTransactions = getTransactions as Mock;
 const mockInsertTransactions = insertTransactions as Mock;
 const mockUpdateTransactions = updateTransactions as Mock;
@@ -103,6 +103,11 @@ function makeExpense(overrides: Partial<SplitwiseExpense> = {}): SplitwiseExpens
   } as SplitwiseExpense;
 }
 
+// one run's fetch of the Splitwise listing, all of it unless nextOffset says where the rest starts
+function fetched(expenses: SplitwiseExpense[], nextOffset: number | null = null) {
+  return { expenses, nextOffset };
+}
+
 function makeLink(
   overrides: Partial<typeof userSchema.links.$inferSelect> = {},
 ): typeof userSchema.links.$inferSelect {
@@ -115,6 +120,8 @@ function makeLink(
     enabled: 1,
     syncBalance: 1,
     lastSyncedAt: null,
+    catchUpOffset: null,
+    catchUpStartedAt: null,
     createdAt: "",
     updatedAt: "",
     ...overrides,
@@ -214,14 +221,14 @@ describe("syncLink dry run", () => {
   beforeEach(async () => {
     db = createTestDb();
     await initUserDb(db);
-    mockGetAllExpenses.mockReset().mockResolvedValue([]);
+    mockGetExpenses.mockReset().mockResolvedValue(fetched([]));
     mockGetTransactions.mockReset().mockResolvedValue([]);
     mockGetCategories.mockReset().mockResolvedValue([]);
   });
 
   it("creates a transaction for a new expense", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+    mockGetExpenses.mockResolvedValue(fetched([makeExpense({ id: 1001 })]));
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -244,9 +251,9 @@ describe("syncLink dry run", () => {
       splitwiseUpdatedAt: "2024-06-15T12:00:00Z",
     });
 
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, updated_at: "2024-06-15T12:00:00Z" }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, updated_at: "2024-06-15T12:00:00Z" })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -262,13 +269,15 @@ describe("syncLink dry run", () => {
       splitwiseUpdatedAt: "2024-06-15T12:00:00Z",
     });
 
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({
-        id: 1001,
-        updated_at: "2024-06-16T08:00:00Z",
-        cost: "30.00",
-      }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([
+        makeExpense({
+          id: 1001,
+          updated_at: "2024-06-16T08:00:00Z",
+          cost: "30.00",
+        }),
+      ]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -288,9 +297,9 @@ describe("syncLink dry run", () => {
       splitwiseUpdatedAt: "2024-06-15T12:00:00Z",
     });
 
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, deleted_at: "2024-06-16T00:00:00Z" }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, deleted_at: "2024-06-16T00:00:00Z" })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -311,9 +320,9 @@ describe("syncLink dry run", () => {
       isDeleted: 1,
     });
 
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, deleted_at: "2024-06-16T00:00:00Z" }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, deleted_at: "2024-06-16T00:00:00Z" })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -322,9 +331,9 @@ describe("syncLink dry run", () => {
 
   it("ignores a deleted expense that was never tracked", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 9999, deleted_at: "2024-06-16T00:00:00Z" }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 9999, deleted_at: "2024-06-16T00:00:00Z" })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -333,7 +342,9 @@ describe("syncLink dry run", () => {
 
   it("skips expenses before start_date", async () => {
     const link = await insertLink({ startDate: "2024-07-01" });
-    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001, date: "2024-06-15T00:00:00Z" })]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, date: "2024-06-15T00:00:00Z" })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -342,7 +353,7 @@ describe("syncLink dry run", () => {
 
   it("skips payments when includePayments is off", async () => {
     const link = await insertLink({ includePayments: 0 });
-    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001, payment: true })]);
+    mockGetExpenses.mockResolvedValue(fetched([makeExpense({ id: 1001, payment: true })]));
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -351,9 +362,9 @@ describe("syncLink dry run", () => {
 
   it("includes payments with prefix when includePayments is on", async () => {
     const link = await insertLink({ includePayments: 1 });
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, payment: true, description: "Settlement" }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, payment: true, description: "Settlement" })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -363,12 +374,14 @@ describe("syncLink dry run", () => {
 
   it("skips expenses where user has no share", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({
-        id: 1001,
-        users: [{ user_id: 456, net_balance: "-10.00" }],
-      }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([
+        makeExpense({
+          id: 1001,
+          users: [{ user_id: 456, net_balance: "-10.00" }],
+        }),
+      ]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -377,9 +390,9 @@ describe("syncLink dry run", () => {
 
   it("carries splitwiseUpdatedAt from the expense", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, updated_at: "2024-06-15T12:00:00Z" }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, updated_at: "2024-06-15T12:00:00Z" })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -388,9 +401,9 @@ describe("syncLink dry run", () => {
 
   it("includes category in notes", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -403,9 +416,9 @@ describe("syncLink dry run", () => {
       { id: 42, name: "Groceries", is_group: false },
       { id: 43, name: "Rent", is_group: false },
     ]);
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -415,9 +428,9 @@ describe("syncLink dry run", () => {
   it("matches category via stemming (plural to singular)", async () => {
     const link = await insertLink();
     mockGetCategories.mockResolvedValue([{ id: 42, name: "Grocery", is_group: false }]);
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -427,9 +440,9 @@ describe("syncLink dry run", () => {
   it("does not set category_id when no LM category matches", async () => {
     const link = await insertLink();
     mockGetCategories.mockResolvedValue([{ id: 42, name: "Entertainment", is_group: false }]);
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -439,9 +452,9 @@ describe("syncLink dry run", () => {
   it("skips category groups when matching", async () => {
     const link = await insertLink();
     mockGetCategories.mockResolvedValue([{ id: 42, name: "Groceries", is_group: true }]);
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 1001, category: { id: 5, name: "Groceries" } })]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -457,13 +470,15 @@ describe("syncLink dry run", () => {
       splitwiseUpdatedAt: "2024-06-15T12:00:00Z",
     });
     mockGetCategories.mockResolvedValue([{ id: 42, name: "Groceries", is_group: false }]);
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({
-        id: 1001,
-        updated_at: "2024-06-16T08:00:00Z",
-        category: { id: 5, name: "Groceries" },
-      }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([
+        makeExpense({
+          id: 1001,
+          updated_at: "2024-06-16T08:00:00Z",
+          category: { id: 5, name: "Groceries" },
+        }),
+      ]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -473,13 +488,15 @@ describe("syncLink dry run", () => {
 
   it("includes total in notes when user share differs from total", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([
-      makeExpense({
-        id: 1001,
-        cost: "30.00",
-        users: [{ user_id: 123, net_balance: "-10.00" }],
-      }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([
+        makeExpense({
+          id: 1001,
+          cost: "30.00",
+          users: [{ user_id: 123, net_balance: "-10.00" }],
+        }),
+      ]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -510,21 +527,23 @@ describe("syncLink dry run", () => {
       },
     ]);
 
-    mockGetAllExpenses.mockResolvedValue([
-      // New expense → create
-      makeExpense({ id: 1001 }),
-      // Modified expense → update
-      makeExpense({ id: 2001, updated_at: "2024-06-20T00:00:00Z" }),
-      // Deleted expense → delete
-      makeExpense({ id: 3001, deleted_at: "2024-06-18T00:00:00Z" }),
-      // User has no share → skip
-      makeExpense({
-        id: 4001,
-        users: [{ user_id: 456, net_balance: "-5.00" }],
-      }),
-      // Already synced, unchanged → skip
-      makeExpense({ id: 5001, updated_at: "2024-06-15T12:00:00Z" }),
-    ]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([
+        // New expense → create
+        makeExpense({ id: 1001 }),
+        // Modified expense → update
+        makeExpense({ id: 2001, updated_at: "2024-06-20T00:00:00Z" }),
+        // Deleted expense → delete
+        makeExpense({ id: 3001, deleted_at: "2024-06-18T00:00:00Z" }),
+        // User has no share → skip
+        makeExpense({
+          id: 4001,
+          users: [{ user_id: 456, net_balance: "-5.00" }],
+        }),
+        // Already synced, unchanged → skip
+        makeExpense({ id: 5001, updated_at: "2024-06-15T12:00:00Z" }),
+      ]),
+    );
 
     const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -544,7 +563,7 @@ describe("syncLink dry run", () => {
     it("does not re-create expenses that already exist in LM", async () => {
       const link = await insertLink({ lastSyncedAt: null });
       mockGetTransactions.mockResolvedValue([{ id: 5000, external_id: "1001" }]);
-      mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+      mockGetExpenses.mockResolvedValue(fetched([makeExpense({ id: 1001 })]));
 
       const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -557,7 +576,7 @@ describe("syncLink dry run", () => {
     it("ignores LM transactions with non-numeric external_id", async () => {
       const link = await insertLink({ lastSyncedAt: null });
       mockGetTransactions.mockResolvedValue([{ id: 5000, external_id: "not-a-number" }]);
-      mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+      mockGetExpenses.mockResolvedValue(fetched([makeExpense({ id: 1001 })]));
 
       const result = await syncLink(db, link, defaultUser, { dryRun: true });
 
@@ -608,7 +627,7 @@ describe("syncLink execute", () => {
   beforeEach(async () => {
     db = createTestDb();
     await initUserDb(db);
-    mockGetAllExpenses.mockReset().mockResolvedValue([]);
+    mockGetExpenses.mockReset().mockResolvedValue(fetched([]));
     mockGetTransactions.mockReset().mockResolvedValue([]);
     mockInsertTransactions
       .mockReset()
@@ -624,7 +643,7 @@ describe("syncLink execute", () => {
 
   it("creates sync_log with status=success on successful sync", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+    mockGetExpenses.mockResolvedValue(fetched([makeExpense({ id: 1001 })]));
     mockInsertTransactions.mockResolvedValue({
       transactions: [{ id: 9001, external_id: "1001" }],
       skippedDuplicates: [],
@@ -643,7 +662,7 @@ describe("syncLink execute", () => {
 
   it("records status=error with message when execute fails", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+    mockGetExpenses.mockResolvedValue(fetched([makeExpense({ id: 1001 })]));
     mockInsertTransactions.mockRejectedValue(new Error("LM API down"));
 
     await expect(syncLink(db, link, defaultUser)).rejects.toThrow("LM API down");
@@ -656,7 +675,7 @@ describe("syncLink execute", () => {
 
   it("logs a planning failure and records it in sync_log", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockRejectedValue(new Error("Splitwise API error (502)"));
+    mockGetExpenses.mockRejectedValue(new Error("Splitwise API error (502)"));
 
     await expect(syncLink(db, link, defaultUser)).rejects.toThrow("Splitwise API error (502)");
 
@@ -683,7 +702,7 @@ describe("syncLink execute", () => {
     },
     {
       service: "Splitwise",
-      reject: () => mockGetAllExpenses.mockRejectedValue(splitwiseRejection()),
+      reject: () => mockGetExpenses.mockRejectedValue(splitwiseRejection()),
       warning: "Sync failed: Splitwise rejected the user's access token",
     },
   ])("logs $service rejecting a credential as a warning and records it", async (c) => {
@@ -706,7 +725,7 @@ describe("syncLink execute", () => {
 
   it("leaves no trace of a failed dry run", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockRejectedValue(new Error("Splitwise API error (401)"));
+    mockGetExpenses.mockRejectedValue(new Error("Splitwise API error (401)"));
 
     await expect(syncLink(db, link, defaultUser, { dryRun: true })).rejects.toThrow(
       "Splitwise API error (401)",
@@ -718,7 +737,7 @@ describe("syncLink execute", () => {
 
   it("updates lastSyncedAt cursor on success", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([]);
+    mockGetExpenses.mockResolvedValue(fetched([]));
 
     await syncLink(db, link, defaultUser);
 
@@ -729,7 +748,9 @@ describe("syncLink execute", () => {
 
   it("writes tracking rows to synced_transactions for created expenses", async () => {
     const link = await insertLink();
-    mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 2001 }), makeExpense({ id: 2002 })]);
+    mockGetExpenses.mockResolvedValue(
+      fetched([makeExpense({ id: 2001 }), makeExpense({ id: 2002 })]),
+    );
     mockInsertTransactions.mockResolvedValue({
       transactions: [
         { id: 9001, external_id: "2001" },
@@ -751,7 +772,7 @@ describe("syncLink execute", () => {
 
   describe("when the request budget runs out", () => {
     beforeEach(() => {
-      mockGetAllExpenses.mockResolvedValue([makeExpense({ id: 1001 })]);
+      mockGetExpenses.mockResolvedValue(fetched([makeExpense({ id: 1001 })]));
       mockInsertTransactions.mockResolvedValue({
         transactions: [{ id: 9001, external_id: "1001" }],
         skippedDuplicates: [],
@@ -762,7 +783,7 @@ describe("syncLink execute", () => {
       [
         "planning",
         () => {
-          mockGetAllExpenses.mockImplementation(exhaustRequestBudget);
+          mockGetExpenses.mockImplementation(exhaustRequestBudget);
           return insertLink();
         },
       ],
@@ -805,9 +826,9 @@ describe("syncLink execute", () => {
     it("stops tracking an edited expense instead of failing the sync", async () => {
       const link = await insertLink();
       await insertTracked(link.id, "3001", 9001);
-      mockGetAllExpenses.mockResolvedValue([
-        makeExpense({ id: 3001, updated_at: "2024-06-15T12:00:00Z" }),
-      ]);
+      mockGetExpenses.mockResolvedValue(
+        fetched([makeExpense({ id: 3001, updated_at: "2024-06-15T12:00:00Z" })]),
+      );
       mockUpdateTransactions.mockResolvedValue({ missingIds: [9001] });
 
       const result = await syncLink(db, link, defaultUser);
@@ -824,9 +845,9 @@ describe("syncLink execute", () => {
     it("marks a deleted expense as deleted without zeroing it out", async () => {
       const link = await insertLink();
       await insertTracked(link.id, "3002", 9002);
-      mockGetAllExpenses.mockResolvedValue([
-        makeExpense({ id: 3002, deleted_at: "2024-06-16T00:00:00Z" }),
-      ]);
+      mockGetExpenses.mockResolvedValue(
+        fetched([makeExpense({ id: 3002, deleted_at: "2024-06-16T00:00:00Z" })]),
+      );
       mockUpdateTransactions.mockResolvedValue({ missingIds: [9002] });
 
       const result = await syncLink(db, link, defaultUser);
@@ -842,9 +863,9 @@ describe("syncLink execute", () => {
     it("does not re-plan the expense on the next sync", async () => {
       const link = await insertLink();
       await insertTracked(link.id, "3003", 9003);
-      mockGetAllExpenses.mockResolvedValue([
-        makeExpense({ id: 3003, updated_at: "2024-06-15T12:00:00Z" }),
-      ]);
+      mockGetExpenses.mockResolvedValue(
+        fetched([makeExpense({ id: 3003, updated_at: "2024-06-15T12:00:00Z" })]),
+      );
       mockUpdateTransactions.mockResolvedValue({ missingIds: [9003] });
       await syncLink(db, link, defaultUser);
 
@@ -858,10 +879,12 @@ describe("syncLink execute", () => {
       const link = await insertLink();
       await insertTracked(link.id, "3004", 9004);
       await insertTracked(link.id, "3005", 9005);
-      mockGetAllExpenses.mockResolvedValue([
-        makeExpense({ id: 3004, updated_at: "2024-06-15T12:00:00Z" }),
-        makeExpense({ id: 3005, updated_at: "2024-06-15T12:00:00Z" }),
-      ]);
+      mockGetExpenses.mockResolvedValue(
+        fetched([
+          makeExpense({ id: 3004, updated_at: "2024-06-15T12:00:00Z" }),
+          makeExpense({ id: 3005, updated_at: "2024-06-15T12:00:00Z" }),
+        ]),
+      );
       mockUpdateTransactions.mockResolvedValue({ missingIds: [9004] });
 
       const result = await syncLink(db, link, defaultUser);
@@ -876,6 +899,263 @@ describe("syncLink execute", () => {
         ["3004", 1, "2024-06-15T12:00:00Z"],
         ["3005", 0, "2024-06-15T12:00:00Z"],
       ]);
+    });
+  });
+});
+
+// --- syncLink over several runs ---
+
+function expenseListing(count: number) {
+  return Array.from({ length: count }, (_, i) => makeExpense({ id: 1001 + i }));
+}
+
+function createdExpenseIds(): string[] {
+  return mockInsertTransactions.mock.calls.flatMap(([, txs]) =>
+    (txs as { external_id: string }[]).map((tx) => tx.external_id),
+  );
+}
+
+describe("syncLink catching up", () => {
+  // Splitwise pages 1,000 at a time; a small page keeps the listings short
+  const PAGE = 2;
+  const perRun = EXPENSE_PAGES_PER_RUN * PAGE;
+  let db: UserDb;
+
+  function serveListing(listing: SplitwiseExpense[], pageSize = PAGE) {
+    mockGetExpenses.mockImplementation(
+      async (_token: string, { offset = 0, maxPages }: { offset?: number; maxPages: number }) => {
+        const end = offset + maxPages * pageSize;
+        const expenses = listing.slice(offset, end);
+        return fetched(expenses, expenses.length === maxPages * pageSize ? end : null);
+      },
+    );
+  }
+
+  async function addLink(values: Partial<typeof links.$inferInsert> = {}) {
+    const [row] = await db
+      .insert(links)
+      .values({ lmAccountId: 100, ...values })
+      .returning();
+    return row;
+  }
+
+  async function linkRow(id: number) {
+    const [row] = await db.select().from(links).where(eq(links.id, id));
+    return row;
+  }
+
+  // a sync started at `at`, of the link as the database has it, as the cron would run it
+  async function runAt(at: string, linkId: number) {
+    vi.setSystemTime(new Date(at));
+    return syncLink(db, await linkRow(linkId), defaultUser);
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    db = createTestDb();
+    await initUserDb(db);
+    mockGetExpenses.mockReset();
+    mockGetTransactions.mockReset().mockResolvedValue([]);
+    mockGetCategories.mockReset().mockResolvedValue([]);
+    mockInsertTransactions
+      .mockReset()
+      .mockImplementation(async (_key: string, txs: { external_id: string }[]) => ({
+        transactions: txs.map((tx) => ({
+          id: 9000 + Number(tx.external_id),
+          external_id: tx.external_id,
+        })),
+        skippedDuplicates: [],
+      }));
+    mockUpdateTransactions.mockReset().mockResolvedValue({ missingIds: [] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("spreads a first sync too large for one run over several runs", async () => {
+    const link = await addLink({ startDate: "2020-01-01" });
+    serveListing(expenseListing(2 * perRun + 3));
+
+    expect(await runAt("2026-10-23T10:00:00.000Z", link.id)).toMatchObject({
+      created: perRun,
+      more_to_sync: true,
+    });
+    expect(await linkRow(link.id)).toMatchObject({
+      lastSyncedAt: null,
+      catchUpOffset: perRun,
+      catchUpStartedAt: "2026-10-23T10:00:00.000Z",
+    });
+
+    expect(await runAt("2026-10-23T12:00:00.000Z", link.id)).toMatchObject({
+      created: perRun,
+      more_to_sync: true,
+    });
+    expect(await linkRow(link.id)).toMatchObject({
+      lastSyncedAt: null,
+      catchUpOffset: 2 * perRun,
+      catchUpStartedAt: "2026-10-23T10:00:00.000Z",
+    });
+
+    expect(await runAt("2026-10-23T14:00:00.000Z", link.id)).toMatchObject({
+      created: 3,
+      more_to_sync: false,
+    });
+    expect(await linkRow(link.id)).toMatchObject({
+      lastSyncedAt: "2026-10-23T10:00:00.000Z",
+      catchUpOffset: null,
+      catchUpStartedAt: null,
+    });
+
+    expect(mockGetExpenses.mock.calls.map(([, params]) => params)).toEqual([
+      expect.objectContaining({ updated_after: "2020-01-01", offset: 0 }),
+      expect.objectContaining({ updated_after: "2020-01-01", offset: perRun }),
+      expect.objectContaining({ updated_after: "2020-01-01", offset: 2 * perRun }),
+    ]);
+    const created = createdExpenseIds();
+    expect(created).toHaveLength(2 * perRun + 3);
+    expect(new Set(created).size).toBe(created.length);
+    const logs = await db.select().from(syncLog);
+    expect(logs.map((row) => row.status)).toEqual(["success", "success", "success"]);
+    expect(mockGetTransactions).toHaveBeenCalledTimes(1);
+
+    // the next sync covers everything updated since the catch-up started
+    serveListing([]);
+    await runAt("2026-10-23T16:00:00.000Z", link.id);
+    expect(mockGetExpenses).toHaveBeenLastCalledWith(
+      "sw-token",
+      expect.objectContaining({ updated_after: "2026-10-23T09:58:00.000Z", offset: 0 }),
+    );
+  });
+
+  it("holds updated_after through a catch-up after earlier syncs", async () => {
+    const link = await addLink({ lastSyncedAt: "2026-09-01T00:00:00.000Z" });
+    serveListing(expenseListing(perRun + 1));
+
+    await runAt("2026-10-23T10:00:00.000Z", link.id);
+    expect(await linkRow(link.id)).toMatchObject({
+      lastSyncedAt: "2026-09-01T00:00:00.000Z",
+      catchUpOffset: perRun,
+    });
+    await runAt("2026-10-23T12:00:00.000Z", link.id);
+
+    expect(
+      mockGetExpenses.mock.calls.map(([, params]) => [params.updated_after, params.offset]),
+    ).toEqual([
+      ["2026-08-31T23:58:00.000Z", 0],
+      ["2026-08-31T23:58:00.000Z", perRun],
+    ]);
+    expect(await linkRow(link.id)).toMatchObject({
+      lastSyncedAt: "2026-10-23T10:00:00.000Z",
+      catchUpOffset: null,
+    });
+    expect(createdExpenseIds()).toHaveLength(perRun + 1);
+  });
+
+  it("gives backfilled transactions the decisions one run would, whichever run reaches them", async () => {
+    // Lunch Money already has the last two expenses, one at Splitwise's amount and one not
+    const listing = expenseListing(2 * perRun + 2);
+    const [matching, drifted] = listing.slice(-2);
+    mockGetTransactions.mockResolvedValue([
+      { id: 501, external_id: String(matching.id), amount: "10.0000" },
+      { id: 502, external_id: String(drifted.id), amount: "12.5000" },
+    ]);
+
+    async function syncUntilDone(pageSize: number) {
+      db = createTestDb();
+      await initUserDb(db);
+      mockInsertTransactions.mockClear();
+      mockUpdateTransactions.mockClear();
+      mockGetTransactions.mockClear();
+      serveListing(listing, pageSize);
+      let link = await addLink();
+      let runs = 0;
+      while (!link.lastSyncedAt && runs < 10) {
+        await syncLink(db, link, defaultUser);
+        runs++;
+        link = await linkRow(link.id);
+      }
+      return {
+        runs,
+        backfills: mockGetTransactions.mock.calls.length,
+        created: createdExpenseIds().sort(),
+        updated: mockUpdateTransactions.mock.calls.flatMap(([, updates]) =>
+          (updates as { id: number }[]).map((u) => u.id),
+        ),
+        tracked: await db
+          .select({
+            expenseId: syncedTransactions.splitwiseExpenseId,
+            lmTransactionId: syncedTransactions.lmTransactionId,
+            splitwiseUpdatedAt: syncedTransactions.splitwiseUpdatedAt,
+            isDeleted: syncedTransactions.isDeleted,
+          })
+          .from(syncedTransactions)
+          .orderBy(syncedTransactions.splitwiseExpenseId),
+      };
+    }
+
+    const oneRun = await syncUntilDone(listing.length);
+    const severalRuns = await syncUntilDone(PAGE);
+
+    expect(oneRun.runs).toBe(1);
+    expect(oneRun.updated).toEqual([502]);
+    expect(oneRun.tracked).toContainEqual(
+      expect.objectContaining({
+        expenseId: String(matching.id),
+        splitwiseUpdatedAt: matching.updated_at,
+      }),
+    );
+    expect(severalRuns).toEqual({ ...oneRun, runs: 3 });
+  });
+
+  it("dry-runs the next run's share of a catch-up", async () => {
+    const listing = expenseListing(2 * perRun + 1);
+    const drifted = listing[perRun];
+    mockGetTransactions.mockResolvedValue([
+      { id: 502, external_id: String(drifted.id), amount: "12.5000" },
+    ]);
+    const link = await addLink();
+    serveListing(listing);
+    await syncLink(db, link, defaultUser);
+
+    const plan = await syncLink(db, await linkRow(link.id), defaultUser, { dryRun: true });
+
+    expect(mockGetExpenses).toHaveBeenLastCalledWith(
+      "sw-token",
+      expect.objectContaining({ offset: perRun }),
+    );
+    expect(mockGetTransactions).toHaveBeenCalledTimes(1);
+    expect(plan).toMatchObject({
+      expenses_fetched: perRun,
+      created: perRun - 1,
+      updated: 1,
+      more_to_sync: true,
+    });
+    expect(await linkRow(link.id)).toMatchObject({ catchUpOffset: perRun });
+  });
+
+  it.each([
+    ["Lunch Money fails", () => mockInsertTransactions.mockRejectedValue(new Error("LM API down"))],
+    [
+      "the request budget runs out",
+      () => vi.spyOn(db.$client, "batch").mockImplementation(exhaustRequestBudget),
+    ],
+  ])("leaves the bookmark where it was when %s", async (_, fail) => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const link = await addLink({
+      catchUpOffset: perRun,
+      catchUpStartedAt: "2026-10-23T10:00:00.000Z",
+    });
+    serveListing(expenseListing(3 * perRun));
+    fail();
+
+    await expect(withRequestBudget(() => syncLink(db, link, defaultUser))).rejects.toThrow();
+
+    expect(await linkRow(link.id)).toMatchObject({
+      lastSyncedAt: null,
+      catchUpOffset: perRun,
+      catchUpStartedAt: "2026-10-23T10:00:00.000Z",
     });
   });
 });
@@ -1060,7 +1340,7 @@ describe("syncUser", () => {
       .mockReset()
       .mockReturnValue(shared as SharedDb);
     vi.mocked(getUserDb).mockReset().mockReturnValue(userDb);
-    mockGetAllExpenses.mockReset().mockResolvedValue([]);
+    mockGetExpenses.mockReset().mockResolvedValue(fetched([]));
     mockGetTransactions.mockReset().mockResolvedValue([]);
     mockGetCategories.mockReset().mockResolvedValue([]);
     mockGetGroup.mockReset().mockResolvedValue(makeGroup(10, [{ currency: "USD", amount: "5" }]));
@@ -1080,7 +1360,7 @@ describe("syncUser", () => {
     await syncUser(1, rates);
 
     expect(vi.mocked(getUserDb)).toHaveBeenCalledWith("libsql://user-1.example");
-    expect(mockGetAllExpenses).toHaveBeenCalledWith("sw-token", expect.anything());
+    expect(mockGetExpenses).toHaveBeenCalledWith("sw-token", expect.anything());
     expect(await syncLogStatuses()).toEqual({
       [first.id]: ["success"],
       [second.id]: ["success"],
@@ -1109,11 +1389,11 @@ describe("syncUser", () => {
   it("records a failed link and moves on to the next", async () => {
     const first = await addLink();
     const second = await addLink({ splitwiseGroupId: "20" });
-    mockGetAllExpenses.mockRejectedValueOnce(new Error("Splitwise is down"));
+    mockGetExpenses.mockRejectedValueOnce(new Error("Splitwise is down"));
 
     await syncUser(1, rates);
 
-    expect(mockGetAllExpenses).toHaveBeenCalledTimes(2);
+    expect(mockGetExpenses).toHaveBeenCalledTimes(2);
     expect(await syncLogStatuses()).toEqual({
       [first.id]: ["error"],
       [second.id]: ["success"],
@@ -1146,13 +1426,13 @@ describe("syncUser", () => {
   it("stops at the first link once the request budget runs out", async () => {
     await addLink();
     await addLink({ splitwiseGroupId: "20" });
-    mockGetAllExpenses.mockImplementation(exhaustRequestBudget);
+    mockGetExpenses.mockImplementation(exhaustRequestBudget);
 
     await expect(withRequestBudget(() => syncUser(1, rates))).rejects.toBeInstanceOf(
       RequestBudgetExceededError,
     );
 
-    expect(mockGetAllExpenses).toHaveBeenCalledTimes(1);
+    expect(mockGetExpenses).toHaveBeenCalledTimes(1);
   });
 
   it("stops when the request budget runs out during balance sync", async () => {
@@ -1170,7 +1450,7 @@ describe("syncUser", () => {
 
     await syncUser(1, rates);
 
-    expect(mockGetAllExpenses).not.toHaveBeenCalled();
+    expect(mockGetExpenses).not.toHaveBeenCalled();
   });
 
   it.each([

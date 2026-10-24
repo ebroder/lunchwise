@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { createMiddleware } from "hono/factory";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, getTableColumns, sql } from "drizzle-orm";
 import { requireAuthJson, type AuthEnv } from "../lib/auth.js";
 import { credentials, links, syncLog } from "../lib/schema-user.js";
 import { syncLink, syncBalances } from "../lib/sync.js";
@@ -174,9 +174,25 @@ api.get("/lunch-money/accounts", async (c) => {
 
 api.get("/links", async (c) => {
   const db = c.get("db");
-  const rows = await db.select().from(links).orderBy(desc(links.createdAt));
+  const rows = await db
+    .select({
+      ...getTableColumns(links),
+      // Drizzle leaves a one-table query's columns unqualified, so they'd bind to sync_log here
+      lastSuccessAt: sql<string | null>`(
+        SELECT max(sync_log.started_at) FROM sync_log
+        WHERE sync_log.link_id = links.id AND sync_log.status = 'success'
+      )`,
+    })
+    .from(links)
+    .orderBy(desc(links.createdAt));
   const failures = await getSyncFailures(db);
-  return c.json(rows.map((link) => ({ ...link, lastFailure: failures.get(link.id) ?? null })));
+  return c.json(
+    rows.map((link) => ({
+      ...link,
+      catchingUp: link.catchUpOffset !== null,
+      lastFailure: failures.get(link.id) ?? null,
+    })),
+  );
 });
 
 api.get("/links/:id", async (c) => {
@@ -224,18 +240,34 @@ api.put("/links/:id", async (c) => {
   if (validationError) return c.json({ error: validationError }, 400);
 
   const db = c.get("db");
-  const existing = await db.select({ id: links.id }).from(links).where(eq(links.id, linkId));
-  if (!existing[0]) return c.json({ error: "Link not found" }, 404);
+  const [existing] = await db
+    .select({
+      splitwiseGroupId: links.splitwiseGroupId,
+      startDate: links.startDate,
+      catchUpOffset: links.catchUpOffset,
+    })
+    .from(links)
+    .where(eq(links.id, linkId));
+  if (!existing) return c.json({ error: "Link not found" }, 404);
+
+  const splitwiseGroupId = body.splitwiseGroupId || null;
+  const startDate = body.startDate || null;
+  // A catch-up's offset means nothing in a different listing, so the catch-up starts over. Ending
+  // it would make an unfinished first sync backfill again, over everything it has created.
+  const restartCatchUp =
+    existing.catchUpOffset !== null &&
+    (splitwiseGroupId !== existing.splitwiseGroupId || startDate !== existing.startDate);
 
   await db
     .update(links)
     .set({
-      splitwiseGroupId: body.splitwiseGroupId || null,
+      splitwiseGroupId,
       lmAccountId: body.lmAccountId,
-      startDate: body.startDate || null,
+      startDate,
       includePayments: body.includePayments ? 1 : 0,
       syncBalance: body.syncBalance ? 1 : 0,
       enabled: body.enabled ? 1 : 0,
+      ...(restartCatchUp ? { catchUpOffset: 0 } : {}),
       updatedAt: new Date().toISOString(),
     })
     .where(eq(links.id, linkId));
@@ -358,6 +390,7 @@ api.get("/links/:id/dry-run", async (c) => {
       created: result.created,
       updated: result.updated,
       deleted: result.deleted,
+      more_to_sync: result.more_to_sync,
       actions: (result.actions ?? []).map((a) => ({
         type: a.type,
         date: a.date,
@@ -417,6 +450,7 @@ api.post("/sync/:linkId", async (c) => {
       created: result.created,
       updated: result.updated,
       deleted: result.deleted,
+      more_to_sync: result.more_to_sync,
     });
   } catch (err) {
     const log = createLogger({ source: "api", endpoint: "sync", linkId });

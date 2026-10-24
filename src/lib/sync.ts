@@ -3,7 +3,7 @@ import { getSharedDb, getUserDb, initUserDb, type UserDb } from "./db.js";
 import { users } from "./schema-shared.js";
 import { credentials, links, syncedTransactions, syncLog } from "./schema-user.js";
 import {
-  getAllExpenses,
+  getExpenses,
   getUserShare,
   getGroups,
   getGroup,
@@ -35,6 +35,11 @@ type TrackedRow = typeof syncedTransactions.$inferSelect;
 
 // Statements (or rows, for a multi-row insert) per Turso request.
 const DB_BATCH = 1000;
+
+// A page of 1,000 costs about 4 requests (the fetch, two Lunch Money inserts, one Turso batch), so
+// a capped run's link costs about 22. That keeps a user with only that link under the 35-request
+// warning, and one with an ordinary link besides under the 45-request guard.
+export const EXPENSE_PAGES_PER_RUN = 4;
 
 interface ActionBase {
   expenseId: string;
@@ -77,6 +82,7 @@ export interface SyncResult {
   created: number;
   updated: number;
   deleted: number;
+  more_to_sync: boolean;
   actions?: PlannedAction[];
 }
 
@@ -169,8 +175,9 @@ async function buildTrackedMap(
 }> {
   const tracked = new Map<string, TrackedRow>();
   const backfilledAmounts = new Map<string, number>();
+  const resumingFirstSync = !link.lastSyncedAt && link.catchUpOffset !== null;
 
-  if (!link.lastSyncedAt) {
+  if (!link.lastSyncedAt && !resumingFirstSync) {
     // Fetch existing LM transactions once (used for both backfill and amount comparison)
     const lmTransactions = await getTransactions(apiKey, {
       manual_account_id: link.lmAccountId,
@@ -181,7 +188,8 @@ async function buildTrackedMap(
     const backfillRows = [];
     for (const tx of lmTransactions) {
       if (!tx.external_id || !/^\d+$/.test(tx.external_id)) continue;
-      backfilledAmounts.set(tx.external_id, parseFloat(tx.amount));
+      const amount = parseFloat(tx.amount);
+      backfilledAmounts.set(tx.external_id, amount);
 
       if (dryRun) {
         tracked.set(tx.external_id, {
@@ -191,6 +199,7 @@ async function buildTrackedMap(
           lmTransactionId: 0,
           splitwiseUpdatedAt: "backfill",
           isDeleted: 0,
+          backfillAmount: amount,
           createdAt: "",
           updatedAt: "",
         });
@@ -200,6 +209,7 @@ async function buildTrackedMap(
           splitwiseExpenseId: tx.external_id,
           lmTransactionId: tx.id,
           splitwiseUpdatedAt: "backfill",
+          backfillAmount: amount,
         });
       }
     }
@@ -233,6 +243,10 @@ async function buildTrackedMap(
     .where(eq(syncedTransactions.linkId, link.id));
   for (const row of rows) {
     tracked.set(row.splitwiseExpenseId, row);
+    // a first sync spread over several runs backfills in its first run only
+    if (resumingFirstSync && row.splitwiseUpdatedAt === "backfill" && row.backfillAmount !== null) {
+      backfilledAmounts.set(row.splitwiseExpenseId, row.backfillAmount);
+    }
   }
 
   return { tracked, backfilledAmounts };
@@ -270,6 +284,7 @@ async function planSync(
 ): Promise<{
   actions: PlannedAction[];
   expenses_fetched: number;
+  nextOffset: number | null;
   stamps: { trackedId: number; splitwiseUpdatedAt: string }[];
 }> {
   const apiKey = user.lunchMoneyApiKey!;
@@ -292,14 +307,19 @@ async function planSync(
     updatedAfter = d.toISOString();
   }
 
-  const expenses = await getAllExpenses(user.splitwiseAccessToken, {
+  const offset = link.catchUpOffset ?? 0;
+  const { expenses, nextOffset } = await getExpenses(user.splitwiseAccessToken, {
     group_id: link.splitwiseGroupId ? parseInt(link.splitwiseGroupId, 10) : undefined,
     updated_after: updatedAfter,
+    offset,
+    maxPages: EXPENSE_PAGES_PER_RUN,
   });
 
   log.info("Fetched Splitwise expenses", {
     count: expenses.length,
     updatedAfter,
+    offset,
+    nextOffset,
     trackedCount: tracked.size,
   });
 
@@ -427,7 +447,7 @@ async function planSync(
     skips,
   });
 
-  return { actions, expenses_fetched: expenses.length, stamps };
+  return { actions, expenses_fetched: expenses.length, nextOffset, stamps };
 }
 
 // Phase 2: Execute planned actions against LM and the local DB.
@@ -615,15 +635,27 @@ export async function syncLink(
     groupId: link.splitwiseGroupId,
     lmAccountId: link.lmAccountId,
     lastSyncedAt: link.lastSyncedAt,
+    catchUpOffset: link.catchUpOffset,
     startDate: link.startDate,
   });
 
   if (dryRun) {
-    const { actions, expenses_fetched } = await planSync(db, link, user, dryRun, log);
-    return { expenses_fetched, ...countActions(actions), actions };
+    const { actions, expenses_fetched, nextOffset } = await planSync(db, link, user, dryRun, log);
+    return {
+      expenses_fetched,
+      ...countActions(actions),
+      more_to_sync: nextOffset !== null,
+      actions,
+    };
   }
 
-  const result: SyncResult = { expenses_fetched: 0, created: 0, updated: 0, deleted: 0 };
+  const result: SyncResult = {
+    expenses_fetched: 0,
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    more_to_sync: false,
+  };
   let logEntryId: number | undefined;
 
   try {
@@ -633,7 +665,13 @@ export async function syncLink(
       .returning({ id: syncLog.id });
     logEntryId = logEntry.id;
 
-    const { actions, expenses_fetched, stamps } = await planSync(db, link, user, dryRun, log);
+    const { actions, expenses_fetched, nextOffset, stamps } = await planSync(
+      db,
+      link,
+      user,
+      dryRun,
+      log,
+    );
     Object.assign(result, { expenses_fetched, ...countActions(actions) });
 
     const counts = await executeActions(db, link, apiKey, actions, log);
@@ -662,11 +700,21 @@ export async function syncLink(
       }
     }
 
-    // Update sync cursor
+    // Splitwise lists expenses by date, newest first, so a capped run bookmarks its offset and the
+    // next run reads on from there with the same updated_after. New expenses push older ones down
+    // (re-reading a few is harmless). One whose date is edited past the bookmark was updated after
+    // the catch-up started, which is why lastSyncedAt moves to that start once the listing runs out.
+    const catchUpStartedAt = link.catchUpStartedAt ?? syncStartedAt;
     await db
       .update(links)
-      .set({ lastSyncedAt: syncStartedAt, updatedAt: sql`datetime('now')` })
+      .set({
+        ...(nextOffset === null
+          ? { lastSyncedAt: catchUpStartedAt, catchUpOffset: null, catchUpStartedAt: null }
+          : { catchUpOffset: nextOffset, catchUpStartedAt }),
+        updatedAt: sql`datetime('now')`,
+      })
       .where(eq(links.id, link.id));
+    result.more_to_sync = nextOffset !== null;
 
     await db
       .update(syncLog)
@@ -684,6 +732,7 @@ export async function syncLink(
       created: counts.created,
       updated: counts.updated,
       deleted: counts.deleted,
+      moreToSync: result.more_to_sync,
     });
   } catch (err) {
     // a sync_log write would be refused, and the consumer's budget report needs the Sentry headroom

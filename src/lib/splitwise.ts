@@ -15,26 +15,37 @@ export function createSplitwiseClient(accessToken: string) {
   });
 }
 
-export async function getAllExpenses(
+export const EXPENSE_PAGE_SIZE = 1000;
+
+// Up to `maxPages` pages of the listing, starting at `offset`. `nextOffset` is where the next
+// page starts, or null once a page comes back short.
+export async function getExpenses(
   accessToken: string,
   params: {
     group_id?: number;
     updated_after?: string;
+    offset?: number;
+    maxPages: number;
   },
-): Promise<SplitwiseExpense[]> {
+): Promise<{ expenses: SplitwiseExpense[]; nextOffset: number | null }> {
   const client = createSplitwiseClient(accessToken);
-  const pageSize = 1000;
-  const maxPages = 10;
-  const allExpenses: SplitwiseExpense[] = [];
-  let offset = 0;
+  const expenses: SplitwiseExpense[] = [];
+  let offset = params.offset ?? 0;
 
-  for (let page = 0; page < maxPages; page++) {
+  for (let page = 0; page < params.maxPages; page++) {
+    if (page > 0) {
+      // Small delay between pages to be respectful
+      await new Promise<void>((r) => {
+        setTimeout(r, 200);
+      });
+    }
+
     const { data, error, response } = await client.GET("/get_expenses", {
       params: {
         query: {
           group_id: params.group_id,
           updated_after: params.updated_after,
-          limit: pageSize,
+          limit: EXPENSE_PAGE_SIZE,
           offset,
         },
       },
@@ -44,25 +55,13 @@ export async function getAllExpenses(
       throw apiError("Splitwise", response.status, error);
     }
 
-    const expenses = data?.expenses ?? [];
-    allExpenses.push(...expenses);
-
-    if (expenses.length < pageSize) break;
-    offset += pageSize;
-
-    // Small delay between pages to be respectful
-    await new Promise<void>((r) => {
-      setTimeout(r, 200);
-    });
+    const pageExpenses = data?.expenses ?? [];
+    expenses.push(...pageExpenses);
+    if (pageExpenses.length < EXPENSE_PAGE_SIZE) return { expenses, nextOffset: null };
+    offset += EXPENSE_PAGE_SIZE;
   }
 
-  if (allExpenses.length >= maxPages * pageSize) {
-    throw new Error(
-      `Splitwise pagination exceeded ${maxPages} pages (${allExpenses.length} expenses). This likely indicates an unexpectedly large dataset.`,
-    );
-  }
-
-  return allExpenses;
+  return { expenses, nextOffset: offset };
 }
 
 export async function getGroups(accessToken: string): Promise<SplitwiseGroup[]> {
