@@ -76,7 +76,11 @@ refused).
   run's link costs about 22 requests. `src/index.test.ts` counts 31 for a
   user with only that link and 41 for one with an ordinary link besides,
   against the 35-request warning and the 45-request guard, so raising the
-  cap means redoing that arithmetic. Keep the Splitwise page size and
+  cap means redoing that arithmetic. Two ordinary links beside a catch-up
+  come to about 51 with balance sync on, so each catch-up run usually stops
+  in balance sync. Balances wait until the catch-up finishes, and each run
+  sends the budget error to Sentry. One queue message per link would fix
+  that too. Keep the Splitwise page size and
   `DB_BATCH` at 1,000 too. At 100 each, a first sync of 3,800 expenses
   (LUNCHWISE-A) needed nearly 100 requests.
 - A message still failing after `max_retries` retries moves to
