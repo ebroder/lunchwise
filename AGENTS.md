@@ -121,7 +121,12 @@ ended, so each resumed run moves it 3,900 further.
   run, since by the second the account holds thousands of transactions the
   sync created. It stores each adopted transaction's amount in
   `synced_transactions.backfill_amount`, and later runs of that first sync
-  compare against it.
+  compare against it. The cap doesn't cover the backfill itself, which costs
+  about 2 requests per 1,000 transactions already in the account. A link
+  re-created on an account holding several thousand Lunchwise transactions
+  would pass the guard in that first run on every attempt. We're waiting to
+  fix it (backfilling only each run's share, say) until Sentry shows it
+  happening.
 - Changing a link's group or start date restarts its catch-up at offset 0.
   Ending the catch-up instead would make an unfinished first sync backfill
   again.
