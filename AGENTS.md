@@ -201,7 +201,8 @@ npx wrangler queues create lunchwise-sync-dlq
 
 Required secrets: `TURSO_SHARED_DB_URL`, `TURSO_AUTH_TOKEN`,
 `TURSO_PLATFORM_API_TOKEN`, `TURSO_ORG`, `TURSO_GROUP`, `SESSION_SECRET`,
-`SPLITWISE_CLIENT_ID`, `SPLITWISE_CLIENT_SECRET`, `APP_URL`, `NODE_ENV`.
+`SPLITWISE_CLIENT_ID`, `SPLITWISE_CLIENT_SECRET`, `ENCRYPTION_KEYS`,
+`APP_URL`, `NODE_ENV`.
 
 Static assets (Vite output + Tailwind CSS in `dist/client/`) are served via
 Workers asset binding.
