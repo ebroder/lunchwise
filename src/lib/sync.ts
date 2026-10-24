@@ -226,13 +226,18 @@ async function buildTrackedMap(
         const result = await db
           .insert(syncedTransactions)
           .values(backfillRows.slice(i, i + DB_BATCH))
-          .onConflictDoNothing();
+          // a row from an earlier attempt may lack the amount that this sync's later runs compare
+          .onConflictDoUpdate({
+            target: [syncedTransactions.linkId, syncedTransactions.splitwiseExpenseId],
+            set: { backfillAmount: sql`excluded.backfill_amount` },
+            setWhere: eq(syncedTransactions.splitwiseUpdatedAt, "backfill"),
+          });
         backfilled += result.rowsAffected;
       }
       log.info("Backfilled existing transactions", {
         lmTransactions: lmTransactions.length,
         matchedByExternalId: backfillRows.length,
-        rowsInserted: backfilled,
+        rowsWritten: backfilled,
       });
     } else {
       log.info("First sync, no existing LM transactions to backfill", {

@@ -1157,6 +1157,49 @@ describe("syncLink catching up", () => {
     expect(severalRuns).toEqual({ ...oneRun, runs: 3 });
   });
 
+  it("fills in a backfilled row's missing amount for the run that reaches its expense", async () => {
+    const listing = expenseListing(perRun + 1);
+    const [stamped, backfilled] = [listing[0], listing[perRun]];
+    const link = await addLink();
+    await db.insert(syncedTransactions).values([
+      {
+        linkId: link.id,
+        splitwiseExpenseId: String(backfilled.id),
+        lmTransactionId: 501,
+        splitwiseUpdatedAt: "backfill",
+      },
+      {
+        linkId: link.id,
+        splitwiseExpenseId: String(stamped.id),
+        lmTransactionId: 502,
+        splitwiseUpdatedAt: stamped.updated_at!,
+      },
+    ]);
+    mockGetTransactions.mockResolvedValue([
+      { id: 501, external_id: String(backfilled.id), amount: "10.0000" },
+      { id: 502, external_id: String(stamped.id), amount: "10.0000" },
+    ]);
+    serveListing(listing);
+
+    await runAt("2026-10-23T10:00:00.000Z", link.id);
+    expect(await linkRow(link.id)).toMatchObject({ catchUpOffset: perRun });
+    await runAt("2026-10-23T12:00:00.000Z", link.id);
+
+    expect(mockGetTransactions).toHaveBeenCalledTimes(1);
+    expect(mockUpdateTransactions).not.toHaveBeenCalled();
+    const rows = new Map(
+      (await db.select().from(syncedTransactions)).map((row) => [row.splitwiseExpenseId, row]),
+    );
+    expect(rows.get(String(backfilled.id))).toMatchObject({
+      splitwiseUpdatedAt: backfilled.updated_at,
+      backfillAmount: 10,
+    });
+    expect(rows.get(String(stamped.id))).toMatchObject({
+      splitwiseUpdatedAt: stamped.updated_at,
+      backfillAmount: null,
+    });
+  });
+
   it("dry-runs the next run's share of a catch-up", async () => {
     const listing = expenseListing(2 * perRun + 1);
     const drifted = listing[perRun];
