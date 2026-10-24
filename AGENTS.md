@@ -58,13 +58,16 @@ refused).
 - Every run logs its request count ("User sync finished"), and one above 35
   also sends a Sentry warning with the `request-budget-warning` fingerprint,
   so they all group into one issue.
-- A user sync costs about 6 requests for a user with a Lunch Money key, about
-  10 per enabled link, and 1 or 2 for balance sync. So a user with 3 enabled
-  links passes the 35-request warning, and one with 4 reaches the 45-request
-  guard. That run stops at the same link every time, so later links and
-  balance sync never run, and the consumer's Sentry error is how we'd find
-  out. The fix is one queue message per link rather than per user. We're
-  waiting to build it until Sentry shows it happening.
+- A user sync costs about 6 requests for a user with a Lunch Money key, and
+  about 10 per enabled link. Balance sync adds 1 (the Lunch Money user), 1 per
+  link with it on (that link's Splitwise group, or all groups in one request)
+  and 1 per Lunch Money account it updates, so 3 for one link and 7 for three
+  on separate accounts. That puts a user with 3 enabled links past the
+  35-request warning, and one with 4 at the 45-request guard. That run stops
+  at the same link every time, so later links and balance sync never run, and
+  the consumer's Sentry error is how we'd find out. The fix is one queue
+  message per link rather than per user. We're waiting to build it until
+  Sentry shows it happening.
 - Those numbers are for a link with little new to fetch. A link's first sync
   fetches every expense updated since its start date, which adds about 4
   requests per 1,000 expenses (one Splitwise page, two Lunch Money inserts
