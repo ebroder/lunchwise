@@ -138,7 +138,12 @@ ended, so each resumed run moves it 3,900 further.
   backfilled before `backfill_amount` existed has no amount to compare, so the
   catch-up updates its transaction only if the expense changed after the
   backfill. Other edits leave the sync alone, and transactions from a group
-  the link no longer covers stay in Lunch Money.
+  the link no longer covers stay in Lunch Money. So do a synced link's
+  transactions when its Lunch Money account changes: they stay in the old
+  account, and the new one only gets what syncs afterwards. We'll decide what
+  that should do once a user runs into it. A run writes its cursor only if
+  the link's `updated_at` hasn't changed since the run read it, so an edit
+  saved mid-run keeps its reset.
 - Otherwise, changing the group or start date, or turning payments on,
   restarts a catch-up in progress at offset 0. Ending the catch-up instead
   would make an unfinished first sync backfill again.

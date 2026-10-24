@@ -1038,6 +1038,37 @@ describe("syncLink catching up", () => {
     );
   });
 
+  it("leaves the cursor to a link edit saved while the run was going", async () => {
+    const link = await addLink({
+      startDate: "2024-01-01",
+      lastSyncedAt: "2026-10-23T08:00:00.000Z",
+    });
+    const listing = expenseListing(3);
+    mockGetExpenses.mockImplementation(async () => {
+      // a widening edit, as PUT /api/links/:id saves it
+      await db
+        .update(links)
+        .set({
+          startDate: "2020-01-01",
+          lastSyncedAt: null,
+          catchUpOffset: 0,
+          catchUpStartedAt: "2026-10-23T10:00:01.000Z",
+          updatedAt: "2026-10-23T10:00:01.000Z",
+        })
+        .where(eq(links.id, link.id));
+      return fetched(listing, null);
+    });
+
+    await runAt("2026-10-23T10:00:00.000Z", link.id);
+
+    expect(createdExpenseIds()).toHaveLength(3);
+    expect(await linkRow(link.id)).toMatchObject({
+      lastSyncedAt: null,
+      catchUpOffset: 0,
+      catchUpStartedAt: "2026-10-23T10:00:01.000Z",
+    });
+  });
+
   it("holds updated_after through a catch-up after earlier syncs", async () => {
     const link = await addLink({ lastSyncedAt: "2026-09-01T00:00:00.000Z" });
     serveListing(expenseListing(perRun + 1));

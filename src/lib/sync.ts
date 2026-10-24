@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { getSharedDb, getUserDb, initUserDb, type UserDb } from "./db.js";
 import { users } from "./schema-shared.js";
 import { credentials, links, syncedTransactions, syncLog } from "./schema-user.js";
@@ -724,7 +724,8 @@ export async function syncLink(
     // updated after the catch-up started, which is why lastSyncedAt moves to that start once the
     // listing runs out.
     const catchUpStartedAt = link.catchUpStartedAt ?? syncStartedAt;
-    await db
+    // matching updatedAt leaves the cursor to an edit saved during this run, which may have reset it
+    const cursor = await db
       .update(links)
       .set({
         ...(nextOffset === null
@@ -732,7 +733,10 @@ export async function syncLink(
           : { catchUpOffset: nextOffset, catchUpStartedAt }),
         updatedAt: sql`datetime('now')`,
       })
-      .where(eq(links.id, link.id));
+      .where(and(eq(links.id, link.id), eq(links.updatedAt, link.updatedAt)));
+    if (cursor.rowsAffected === 0) {
+      log.info("Link edited during sync, so its cursor stays as the edit left it");
+    }
     result.more_to_sync = nextOffset !== null;
 
     await db
