@@ -34,8 +34,8 @@ describe("getAllExpenses", () => {
   });
 
   it("paginates when a page is full", async () => {
-    const page1 = Array.from({ length: 100 }, (_, i) => ({ id: i }));
-    const page2 = [{ id: 100 }, { id: 101 }];
+    const page1 = Array.from({ length: 1000 }, (_, i) => ({ id: i }));
+    const page2 = [{ id: 1000 }, { id: 1001 }];
 
     fetchSpy
       .mockResolvedValueOnce(jsonResponse({ expenses: page1 }))
@@ -43,7 +43,7 @@ describe("getAllExpenses", () => {
 
     const result = await getAllExpenses("token", {});
 
-    expect(result).toHaveLength(102);
+    expect(result).toHaveLength(1002);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
@@ -59,6 +59,7 @@ describe("getAllExpenses", () => {
     const url = new URL(request.url);
     expect(url.searchParams.get("group_id")).toBe("42");
     expect(url.searchParams.get("updated_after")).toBe("2024-01-01T00:00:00Z");
+    expect(url.searchParams.get("limit")).toBe("1000");
   });
 
   it("throws on API error", async () => {

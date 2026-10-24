@@ -65,6 +65,14 @@ refused).
   balance sync never run, and the consumer's Sentry error is how we'd find
   out. The fix is one queue message per link rather than per user. We're
   waiting to build it until Sentry shows it happening.
+- Those numbers are for a link with little new to fetch. A link's first sync
+  fetches every expense updated since its start date, which adds about 4
+  requests per 1,000 expenses (one Splitwise page, two Lunch Money inserts
+  and one Turso batch), so one run reaches the guard at roughly 8,000
+  expenses. Keep the Splitwise page size and `DB_BATCH` at 1,000. At 100
+  each, a first sync of 3,800 expenses (LUNCHWISE-A) needed nearly 100
+  requests, and since `lastSyncedAt` only moves after a sync succeeds, every
+  attempt stopped at the same page.
 - A message still failing after `max_retries` retries moves to
   `lunchwise-sync-dlq`, whose consumer reports "User N's sync failed
   repeatedly" to Sentry (user ID only) and acks. That's the only report for a
@@ -260,6 +268,14 @@ API errors, and the cron handler emit structured logs with context fields
   uncounted. Sentry needs no wiring, because its Cloudflare transport holds
   every envelope until the flush that runs after the handler returns (for a
   fetch handler, after the response body has been sent).
+- Turso documents no limit on statements per `batch()` call. A test on
+  2026-10-23 sent batches of 5,000 statements (about 940 KB) and a single
+  5,000-row insert with 20,000 parameters, and all of them succeeded.
+- Splitwise's `get_expenses` accepts `limit=1000`, although its docs only
+  give the default of 20 (`limit=0` returned 2,000 in a test on 2026-10-23).
+  It returns expenses newest `date` first, not in `updated_at` order, so a
+  fetch that stops partway can't use the last `updated_at` it saw as a
+  bookmark.
 - Lunch Money's insert and update APIs accept a maximum of 500 transactions
   per request. The client functions in `lunch-money.ts` chunk automatically.
 - Lunch Money's bulk update rejects the whole batch with a 404 if any

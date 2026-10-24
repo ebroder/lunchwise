@@ -23,8 +23,8 @@ export async function getAllExpenses(
   },
 ): Promise<SplitwiseExpense[]> {
   const client = createSplitwiseClient(accessToken);
-  const pageSize = 100;
-  const maxPages = 50;
+  const pageSize = 1000;
+  const maxPages = 10;
   const allExpenses: SplitwiseExpense[] = [];
   let offset = 0;
 

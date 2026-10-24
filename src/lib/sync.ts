@@ -33,6 +33,9 @@ type Link = typeof links.$inferSelect;
 
 type TrackedRow = typeof syncedTransactions.$inferSelect;
 
+// Statements (or rows, for a multi-row insert) per Turso request.
+const DB_BATCH = 1000;
+
 interface ActionBase {
   expenseId: string;
   date: string;
@@ -204,11 +207,10 @@ async function buildTrackedMap(
     // Batch inserts to stay within Cloudflare Workers subrequest limits
     if (backfillRows.length > 0) {
       let backfilled = 0;
-      const BATCH = 100;
-      for (let i = 0; i < backfillRows.length; i += BATCH) {
+      for (let i = 0; i < backfillRows.length; i += DB_BATCH) {
         const result = await db
           .insert(syncedTransactions)
-          .values(backfillRows.slice(i, i + BATCH))
+          .values(backfillRows.slice(i, i + DB_BATCH))
           .onConflictDoNothing();
         backfilled += result.rowsAffected;
       }
@@ -565,9 +567,8 @@ async function executeActions(
   // sync self-heals via duplicate external_id handling in the creates path.
   if (dbStmts.length > 0) {
     try {
-      const BATCH = 100;
-      for (let i = 0; i < dbStmts.length; i += BATCH) {
-        await db.$client.batch(dbStmts.slice(i, i + BATCH));
+      for (let i = 0; i < dbStmts.length; i += DB_BATCH) {
+        await db.$client.batch(dbStmts.slice(i, i + DB_BATCH));
       }
       log.info("DB writes complete", { statements: dbStmts.length });
     } catch (err) {
@@ -646,9 +647,8 @@ export async function syncLink(
           sql: "UPDATE synced_transactions SET splitwise_updated_at = ?, updated_at = datetime('now') WHERE id = ?",
           args: [s.splitwiseUpdatedAt, s.trackedId],
         }));
-        const BATCH = 100;
-        for (let i = 0; i < stmts.length; i += BATCH) {
-          await db.$client.batch(stmts.slice(i, i + BATCH));
+        for (let i = 0; i < stmts.length; i += DB_BATCH) {
+          await db.$client.batch(stmts.slice(i, i + DB_BATCH));
         }
         log.info("Stamped backfill rows", { count: stamps.length });
       } catch (err) {
