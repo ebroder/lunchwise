@@ -247,15 +247,19 @@ async function queueInvocation(
   };
 }
 
-async function apiInvocation(method: string, path: string, json?: unknown, respond?: typeof fetch) {
+async function sessionCookie(): Promise<string> {
   const session = await new SignJWT({ sub: "7" })
     .setProtectedHeader({ alg: "HS256" })
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(workerEnv.SESSION_SECRET));
+  return `lunchwise_session=${session}`;
+}
+
+async function apiInvocation(method: string, path: string, json?: unknown, respond?: typeof fetch) {
   const request = new Request(`https://lunchwise.example.com${path}`, {
     method,
     headers: {
-      cookie: `lunchwise_session=${session}`,
+      cookie: await sessionCookie(),
       ...(json === undefined ? {} : { "content-type": "application/json" }),
     },
     body: json === undefined ? undefined : JSON.stringify(json),
@@ -368,6 +372,26 @@ describe("Sentry reports", () => {
     const sent = envelopes.join("\n");
     expect(sent).not.toContain("lm-secret-key");
     expect(sent).not.toContain("203.0.113.7");
+  });
+
+  it.each(["/dashboard", "/api/me"])("report an error a route throws (%s)", async (path) => {
+    vi.mocked(getSharedDb).mockImplementationOnce(() => {
+      throw new Error("Turso is down");
+    });
+    const request = new Request(`https://lunchwise.example.com${path}`, {
+      headers: { cookie: await sessionCookie() },
+    });
+    const runtime = fakeRuntime();
+    let status = 0;
+
+    await runtime.run(async (ctx) => {
+      const response = await worker.fetch!(request, workerEnv, ctx);
+      status = response.status;
+      await response.text();
+    });
+
+    expect(status).toBe(500);
+    expect(sentryErrors(runtime.delivered)).toEqual(["Turso is down"]);
   });
 
   it.each(["ok", "error"] as const)(

@@ -291,6 +291,11 @@ Structured JSON logging via `src/lib/logger.ts`. All sync operations,
 API errors, and the cron handler emit structured logs with context fields
 (userId, linkId, etc.).
 
+An error that no route catches is logged (and so sent to Sentry) by
+`app.onError` in `src/app.tsx`, which then returns a plain-text 500. A
+sub-app's own `onError`, like the one in `api.tsx`, has to rethrow anything it
+doesn't handle, or that handler never sees it.
+
 - **Live logs in production**: `wrangler tail --format json`
 - **Verbose per-expense tracing**: Set `LOG_LEVEL=debug` in wrangler.toml
   `[vars]` (or via `wrangler secret put`). This logs every skip reason,
