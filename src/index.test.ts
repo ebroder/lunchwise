@@ -682,6 +682,27 @@ describe("Dashboard", () => {
     const [cred] = await userDb.select().from(userSchema.credentials);
     expect(cred.splitwiseTokenUpdatedAt! >= before).toBe(true);
   });
+
+  it("clears the production session cookie on logout", async () => {
+    const response = await worker.fetch!(
+      new Request("https://lunchwise.example.com/auth/logout", {
+        headers: { cookie: "__Secure-lunchwise_session=token" },
+      }),
+      { ...workerEnv, NODE_ENV: "production" },
+      {
+        waitUntil: () => {},
+        passThroughOnException: () => {},
+        props: {},
+      } as unknown as ExecutionContext,
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/");
+    const cookie = response.headers.get("set-cookie");
+    expect(cookie).toMatch(/^__Secure-lunchwise_session=;/u);
+    expect(cookie).toContain("Max-Age=0");
+    expect(cookie).toContain("Secure");
+  });
 });
 
 // Splitwise with this many expenses in each group, and a Lunch Money that takes whatever it's sent

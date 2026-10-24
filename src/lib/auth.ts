@@ -74,7 +74,7 @@ export type AuthEnv = {
 };
 
 export function clearSession(c: Context): void {
-  deleteCookie(c, cookieName(), { path: "/" });
+  deleteCookie(c, cookieName(), { path: "/", secure: env.NODE_ENV === "production" });
 }
 
 // Tracks which per-user DBs have had initUserDb() run in this isolate.
