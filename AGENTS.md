@@ -91,12 +91,21 @@ Splitwise lists expenses by `date`, newest first (`updated_at`, `created_at`
 and `id` come in no useful order), so the bookmark is a page offset into one
 listing. A run whose last page comes back full records `catch_up_offset` and
 `catch_up_started_at` on the link and leaves `lastSyncedAt` alone, so the next
-run asks for the same `updated_after` and starts at the offset. New expenses
-push older ones down the listing, and the planner skips the few a run reads
-twice. An expense whose date is edited during the catch-up can jump behind the
-bookmark, but its `updated_at` is then later than the catch-up's start, which
-is why the run that reaches the end sets `lastSyncedAt` to that start and not
-its own.
+run asks for the same `updated_after` and starts just before the offset. New
+expenses push older ones down the listing, and the planner skips the few a run
+reads twice. An expense whose date is edited during the catch-up can jump
+behind the bookmark, but its `updated_at` is then later than the catch-up's
+start, which is why the run that reaches the end sets `lastSyncedAt` to that
+start and not its own.
+
+That jump also moves the expense at the bookmark up one place, and so does a
+fetched expense leaving the listing (moved to another group, say). The catch-up
+hasn't read that expense yet, and no later sync fetches it, since its
+`updated_at` predates the catch-up. So each run starts `CATCH_UP_OVERLAP` (100)
+expenses before the stored offset. More than 100 fetched expenses moving behind
+the bookmark or leaving the listing between two runs could still skip one. The
+overlap applies only to reading. The stored offset is where the run's last page
+ended, so each resumed run moves it 3,900 further.
 
 - A capped run is a success in `sync_log`. A run that fails leaves the
   bookmark where it was, so the next run redoes that part.

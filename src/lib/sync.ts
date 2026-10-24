@@ -41,6 +41,11 @@ const DB_BATCH = 1000;
 // warning, and one with an ordinary link besides under the 45-request guard.
 export const EXPENSE_PAGES_PER_RUN = 4;
 
+// A catch-up run starts this many expenses before its bookmark, because each fetched expense that
+// moves behind the bookmark or leaves the listing shifts an unfetched one up past it. Keep it well
+// below a run's EXPENSE_PAGES_PER_RUN pages, so every run moves the bookmark forward.
+export const CATCH_UP_OVERLAP = 100;
+
 interface ActionBase {
   expenseId: string;
   date: string;
@@ -307,7 +312,7 @@ async function planSync(
     updatedAfter = d.toISOString();
   }
 
-  const offset = link.catchUpOffset ?? 0;
+  const offset = Math.max(0, (link.catchUpOffset ?? 0) - CATCH_UP_OVERLAP);
   const { expenses, nextOffset } = await getExpenses(user.splitwiseAccessToken, {
     group_id: link.splitwiseGroupId ? parseInt(link.splitwiseGroupId, 10) : undefined,
     updated_after: updatedAfter,
@@ -701,9 +706,10 @@ export async function syncLink(
     }
 
     // Splitwise lists expenses by date, newest first, so a capped run bookmarks its offset and the
-    // next run reads on from there with the same updated_after. New expenses push older ones down
-    // (re-reading a few is harmless). One whose date is edited past the bookmark was updated after
-    // the catch-up started, which is why lastSyncedAt moves to that start once the listing runs out.
+    // next run reads on from just before there with the same updated_after. New expenses push older
+    // ones down (re-reading a few is harmless). One whose date is edited past the bookmark was
+    // updated after the catch-up started, which is why lastSyncedAt moves to that start once the
+    // listing runs out.
     const catchUpStartedAt = link.catchUpStartedAt ?? syncStartedAt;
     await db
       .update(links)

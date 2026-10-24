@@ -6,7 +6,13 @@ import * as sharedSchema from "./schema-shared.js";
 import * as userSchema from "./schema-user.js";
 import { credentials, syncedTransactions, syncLog, links } from "./schema-user.js";
 import { getSharedDb, getUserDb, initUserDb, type SharedDb, type UserDb } from "./db.js";
-import { EXPENSE_PAGES_PER_RUN, syncLink, syncBalances, syncUser } from "./sync.js";
+import {
+  CATCH_UP_OVERLAP,
+  EXPENSE_PAGES_PER_RUN,
+  syncLink,
+  syncBalances,
+  syncUser,
+} from "./sync.js";
 import { env } from "./env.js";
 import { encrypt } from "./crypto.js";
 import { apiError } from "./errors.js";
@@ -17,6 +23,7 @@ import {
   withRequestBudget,
 } from "./request-budget.js";
 import {
+  EXPENSE_PAGE_SIZE,
   getUserShare,
   getExpenses,
   getGroups,
@@ -916,8 +923,7 @@ function createdExpenseIds(): string[] {
 }
 
 describe("syncLink catching up", () => {
-  // Splitwise pages 1,000 at a time; a small page keeps the listings short
-  const PAGE = 2;
+  const PAGE = EXPENSE_PAGE_SIZE;
   const perRun = EXPENSE_PAGES_PER_RUN * PAGE;
   let db: UserDb;
 
@@ -989,17 +995,17 @@ describe("syncLink catching up", () => {
     });
 
     expect(await runAt("2026-10-23T12:00:00.000Z", link.id)).toMatchObject({
-      created: perRun,
+      created: perRun - CATCH_UP_OVERLAP,
       more_to_sync: true,
     });
     expect(await linkRow(link.id)).toMatchObject({
       lastSyncedAt: null,
-      catchUpOffset: 2 * perRun,
+      catchUpOffset: 2 * perRun - CATCH_UP_OVERLAP,
       catchUpStartedAt: "2026-10-23T10:00:00.000Z",
     });
 
     expect(await runAt("2026-10-23T14:00:00.000Z", link.id)).toMatchObject({
-      created: 3,
+      created: 3 + CATCH_UP_OVERLAP,
       more_to_sync: false,
     });
     expect(await linkRow(link.id)).toMatchObject({
@@ -1010,8 +1016,11 @@ describe("syncLink catching up", () => {
 
     expect(mockGetExpenses.mock.calls.map(([, params]) => params)).toEqual([
       expect.objectContaining({ updated_after: "2020-01-01", offset: 0 }),
-      expect.objectContaining({ updated_after: "2020-01-01", offset: perRun }),
-      expect.objectContaining({ updated_after: "2020-01-01", offset: 2 * perRun }),
+      expect.objectContaining({ updated_after: "2020-01-01", offset: perRun - CATCH_UP_OVERLAP }),
+      expect.objectContaining({
+        updated_after: "2020-01-01",
+        offset: 2 * perRun - 2 * CATCH_UP_OVERLAP,
+      }),
     ]);
     const created = createdExpenseIds();
     expect(created).toHaveLength(2 * perRun + 3);
@@ -1044,7 +1053,7 @@ describe("syncLink catching up", () => {
       mockGetExpenses.mock.calls.map(([, params]) => [params.updated_after, params.offset]),
     ).toEqual([
       ["2026-08-31T23:58:00.000Z", 0],
-      ["2026-08-31T23:58:00.000Z", perRun],
+      ["2026-08-31T23:58:00.000Z", perRun - CATCH_UP_OVERLAP],
     ]);
     expect(await linkRow(link.id)).toMatchObject({
       lastSyncedAt: "2026-10-23T10:00:00.000Z",
@@ -1052,6 +1061,45 @@ describe("syncLink catching up", () => {
     });
     expect(createdExpenseIds()).toHaveLength(perRun + 1);
   });
+
+  it.each([
+    {
+      change: "is redated behind the bookmark",
+      updated: 1,
+      shift: (listing: SplitwiseExpense[], moved: SplitwiseExpense) => [
+        ...listing.filter((e) => e !== moved),
+        { ...moved, date: "2019-06-15T00:00:00Z", updated_at: "2026-10-23T11:00:00Z" },
+      ],
+    },
+    {
+      change: "leaves the listing",
+      updated: 0,
+      shift: (listing: SplitwiseExpense[], moved: SplitwiseExpense) =>
+        listing.filter((e) => e !== moved),
+    },
+  ])(
+    "still creates the expense at the bookmark when one already fetched $change",
+    async ({ shift, updated }) => {
+      const link = await addLink();
+      const listing = expenseListing(perRun + 10);
+      const atBookmark = listing[perRun];
+      serveListing(listing);
+      await runAt("2026-10-23T10:00:00.000Z", link.id);
+      expect(await linkRow(link.id)).toMatchObject({ catchUpOffset: perRun });
+
+      // everything after the moved expense shifts up one, putting atBookmark just before the bookmark
+      serveListing(shift(listing, listing[5]));
+      expect(await runAt("2026-10-23T12:00:00.000Z", link.id)).toMatchObject({
+        created: 10,
+        updated,
+        more_to_sync: false,
+      });
+
+      const created = createdExpenseIds();
+      expect(created).toContain(String(atBookmark.id));
+      expect(created.sort()).toEqual(listing.map((e) => String(e.id)).sort());
+    },
+  );
 
   it("gives backfilled transactions the decisions one run would, whichever run reaches them", async () => {
     // Lunch Money already has the last two expenses, one at Splitwise's amount and one not
@@ -1123,12 +1171,12 @@ describe("syncLink catching up", () => {
 
     expect(mockGetExpenses).toHaveBeenLastCalledWith(
       "sw-token",
-      expect.objectContaining({ offset: perRun }),
+      expect.objectContaining({ offset: perRun - CATCH_UP_OVERLAP }),
     );
     expect(mockGetTransactions).toHaveBeenCalledTimes(1);
     expect(plan).toMatchObject({
       expenses_fetched: perRun,
-      created: perRun - 1,
+      created: perRun - CATCH_UP_OVERLAP - 1,
       updated: 1,
       more_to_sync: true,
     });

@@ -17,7 +17,7 @@ import { countedFetch, REQUEST_BUDGET, REQUEST_WARNING } from "./lib/request-bud
 import * as sharedSchema from "./lib/schema-shared.js";
 import * as userSchema from "./lib/schema-user.js";
 import { EXPENSE_PAGE_SIZE, getExpenses } from "./lib/splitwise.js";
-import { EXPENSE_PAGES_PER_RUN, syncUser } from "./lib/sync.js";
+import { CATCH_UP_OVERLAP, EXPENSE_PAGES_PER_RUN, syncUser } from "./lib/sync.js";
 import {
   enqueueUserSyncs,
   SYNC_DEAD_LETTER_QUEUE,
@@ -814,7 +814,7 @@ describe("Large syncs", () => {
     expect(body).toMatchObject({ expenses_fetched: 0, more_to_sync: true });
     expect(getExpenses).toHaveBeenCalledWith(
       "sw-token",
-      expect.objectContaining({ offset: perRun }),
+      expect.objectContaining({ offset: perRun - CATCH_UP_OVERLAP }),
     );
   });
 
