@@ -20,29 +20,29 @@
   },
   "dependencies": {
     "@libsql/client": "^0.18.0",
-    "@sentry/cloudflare": "^11.10.0",
+    "@sentry/cloudflare": "^11.11.0",
     "drizzle-orm": "^0.45.4",
-    "hono": "^4.13.14",
-    "jose": "^6.2.14",
+    "hono": "^4.13.17",
+    "jose": "^6.2.15",
     "openapi-fetch": "^0.17.0",
-    "preact": "^11.1.1",
+    "preact": "^11.2.0",
     "stemmer": "^2.0.1",
     "wouter": "^3.13.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.4",
-    "@cloudflare/workers-types": "^5.20261031.1",
+    "@biomejs/biome": "^2.6.6",
+    "@cloudflare/workers-types": "^5.20261107.1",
     "@preact/preset-vite": "^2.10.6",
-    "@tailwindcss/cli": "^4.3.3",
+    "@tailwindcss/cli": "^4.3.5",
     "@types/node": "^26.6.6",
-    "@vitest/coverage-v8": "^5.0.5",
+    "@vitest/coverage-v8": "^5.1.0",
     "openapi-typescript": "^7.13.0",
-    "oxlint": "^1.90.0",
+    "oxlint": "^1.92.0",
     "tailwindcss": "^4.2.1",
     "typescript": "^7.0.2",
-    "vite": "^8.3.5",
+    "vite": "^8.3.6",
     "vitest": "^5.0.0",
-    "wrangler": "^4.156.0"
+    "wrangler": "^4.158.0"
   },
   "overrides": {
     "openapi-typescript": {
